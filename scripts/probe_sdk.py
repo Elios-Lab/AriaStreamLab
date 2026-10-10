@@ -20,7 +20,9 @@ import contextlib
 import json
 import os
 import platform
+import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -69,6 +71,24 @@ class Report:
         print("       " + traceback.format_exc().replace("\n", "\n       "))
 
 
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+CONTROL_PORT = 23456  # "recording manager" port the SDK uses for IP control (seen in CLI logs)
+
+
+def strip_ansi(text: str) -> str:
+    """Remove colour escape codes from CLI output."""
+    return _ANSI.sub("", text)
+
+
+def tcp_reachable(ip: str, port: int, timeout: float = 3.0) -> bool:
+    """True when a TCP connection to ``ip:port`` succeeds within ``timeout``."""
+    try:
+        with socket.create_connection((ip, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
 def run_cli(*args: str, timeout: float = 90) -> dict[str, Any]:
     """Run the bundled ``aria_gen2`` CLI and capture everything.
 
@@ -84,8 +104,8 @@ def run_cli(*args: str, timeout: float = 90) -> dict[str, Any]:
     return {
         "cmd": ["aria_gen2", *argv],
         "returncode": proc.returncode,
-        "stdout": proc.stdout,
-        "stderr": proc.stderr,
+        "stdout": strip_ansi(proc.stdout),
+        "stderr": strip_ansi(proc.stderr),
         "seconds": round(time.monotonic() - t0, 2),
     }
 
@@ -307,7 +327,7 @@ def main() -> int:
         auth = guarded(lambda: run_cli("auth check"))
         report.finish(
             s,
-            "PASS" if usb else "FAIL",
+            "PASS" if (usb or usb_net) else "FAIL",
             usb_devices=[list(x) for x in usb] if usb else usb_raw,
             usb_network_devices=[{"ip": t.ip, "serial": t.serial} for t in usb_net]
             if usb_net
@@ -315,7 +335,7 @@ def main() -> int:
             cli_device_list=cli_list,
             cli_auth_check=auth,
         )
-        if not usb and not args.ip:
+        if not usb and not usb_net and not args.ip:
             print(
                 "\n    >>> The SDK sees no glasses over USB. Before re-running, check:\n"
                 "    >>>   1. glasses powered on and connected with a USB-C *data* cable "
@@ -393,7 +413,10 @@ def main() -> int:
             time.sleep(3)
             stat = run_cli("device hotspot status")
             report.finish(
-                s, "PASS" if start["returncode"] == 0 else "FAIL", start=start, status=stat
+                s,
+                "PASS" if start["returncode"] == 0 else "FAIL",
+                hotspot_start=start,
+                hotspot_status=stat,
             )
             print(
                 "\n    >>> Now join the glasses' hotspot from this laptop, then press ENTER."
@@ -418,6 +441,15 @@ def main() -> int:
     if args.interface != "usb" and not args.ip and control_ip:
         s = report.step("A-1b", f"re-connect over Wi-Fi: DeviceTarget(ip={control_ip})")
         try:
+            reachable = tcp_reachable(control_ip, CONTROL_PORT)
+            s.details[f"tcp_reachable_{CONTROL_PORT}"] = reachable
+            if not reachable:
+                print(
+                    f"    >>> {control_ip}:{CONTROL_PORT} is not reachable from this laptop: "
+                    "the Mac must be on the same Wi-Fi network as the glasses "
+                    "(the device's SSID is in the STATUS step). Continuing over USB."
+                )
+                raise RuntimeError(f"{control_ip}:{CONTROL_PORT} unreachable (different network?)")
             dev2 = client.connect(sdk.DeviceTarget(ip=control_ip))
             report.finish(s, "PASS", serial=dev2.serial(), connection_id=dev2.connection_id())
             device = dev2
@@ -444,9 +476,9 @@ def main() -> int:
     cert_name = ""
     try:
         res = run_cli("streaming install-certs")
-        for tok in res["stdout"].split():
-            if tok.startswith("cert_"):
-                cert_name = tok.strip().rstrip(".,")
+        m = re.search(r"cert_\d+", res["stdout"] + res["stderr"])
+        if m:
+            cert_name = m.group(0)
         report.finish(s, "PASS" if res["returncode"] == 0 else "FAIL", cert_name=cert_name, **res)
     except Exception as exc:
         report.fail(s, exc)
