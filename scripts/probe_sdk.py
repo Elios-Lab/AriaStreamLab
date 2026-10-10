@@ -70,14 +70,19 @@ class Report:
 
 
 def run_cli(*args: str, timeout: float = 90) -> dict[str, Any]:
-    """Run the bundled ``aria_gen2`` CLI and capture everything."""
+    """Run the bundled ``aria_gen2`` CLI and capture everything.
+
+    Each element of ``args`` may contain spaces (``"device list"``); it is split into
+    separate argv entries, because the CLI treats ``"device list"`` as one unknown token.
+    """
     exe = shutil.which("aria_gen2")
     if exe is None:
         raise RuntimeError("aria_gen2 CLI not on PATH (is the virtualenv activated?)")
+    argv = [tok for arg in args for tok in arg.split()]
     t0 = time.monotonic()
-    proc = subprocess.run([exe, *args], capture_output=True, text=True, timeout=timeout)
+    proc = subprocess.run([exe, *argv], capture_output=True, text=True, timeout=timeout)
     return {
-        "cmd": ["aria_gen2", *args],
+        "cmd": ["aria_gen2", *argv],
         "returncode": proc.returncode,
         "stdout": proc.stdout,
         "stderr": proc.stderr,
@@ -278,20 +283,53 @@ def main() -> int:
         64: "camera-rgb",
     }
 
-    # ---------------------------------------------------------------- CLI discovery
-    s = report.step("CLI-1", "aria_gen2 device list (USB) ")
-    try:
-        report.finish(s, "PASS", **run_cli("device list"))
-    except Exception as exc:
-        report.fail(s, exc)
-
-    # ---------------------------------------------------------------- connect
+    # ---------------------------------------------------------------- pre-flight
     client = sdk.DeviceClient()
     cfg = sdk.DeviceClientConfig()
     cfg.enable_device_monitoring = True
     client.set_client_config(cfg)
     device = None
 
+    s = report.step("PRE", "pre-flight: USB devices seen by the SDK and by the CLI, pairing state")
+    try:
+
+        def guarded(fn: Any) -> Any:
+            try:
+                return fn()
+            except Exception as exc:
+                return f"ERROR {type(exc).__name__}: {exc}"
+
+        usb_raw = guarded(client.usb_devices)
+        usb = usb_raw if isinstance(usb_raw, list) else []
+        usb_net_raw = guarded(client.usb_network_devices)
+        usb_net = usb_net_raw if isinstance(usb_net_raw, list) else []
+        cli_list = guarded(lambda: run_cli("device list"))
+        auth = guarded(lambda: run_cli("auth check"))
+        report.finish(
+            s,
+            "PASS" if usb else "FAIL",
+            usb_devices=[list(x) for x in usb] if usb else usb_raw,
+            usb_network_devices=[{"ip": t.ip, "serial": t.serial} for t in usb_net]
+            if usb_net
+            else usb_net_raw,
+            cli_device_list=cli_list,
+            cli_auth_check=auth,
+        )
+        if not usb and not args.ip:
+            print(
+                "\n    >>> The SDK sees no glasses over USB. Before re-running, check:\n"
+                "    >>>   1. glasses powered on and connected with a USB-C *data* cable "
+                "(try another cable/port);\n"
+                "    >>>   2. `aria_doctor` reports OK (USB networking / ports);\n"
+                "    >>>   3. `aria_gen2 device list` lists the device;\n"
+                "    >>>   4. `aria_gen2 auth check` says authenticated "
+                "(else `aria_gen2 auth pair` + accept in the Companion App).\n"
+                "    >>> If the glasses are already on Wi-Fi, pass --ip <device-ip> instead."
+            )
+    except Exception as exc:
+        report.fail(s, exc)
+
+    # ---------------------------------------------------------------- connect
     s = report.step("A-1a", f"DeviceClient.connect({'ip=' + args.ip if args.ip else 'usb'})")
     try:
         target = sdk.DeviceTarget(ip=args.ip, serial=args.serial)
