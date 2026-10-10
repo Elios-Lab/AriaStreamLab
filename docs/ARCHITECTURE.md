@@ -103,6 +103,19 @@ Pre‑defined profiles: `profile8` (recording, general), `profile9` (streaming, 
 | **A‑7** | The custom profile derived from the experiment config is accepted via `HttpStreamingConfig.profile_json` and does not need to be `device profile add`‑ed first. | Config → profile translation. | Probe with a profile8‑derived JSON. Default behaviour (see §5) does not depend on this. |
 | **A‑8** | `ImageData.to_numpy_array()` after Python decoding yields `uint8` HxWx3 (RGB) / HxW (mono) without an extra copy per frame being prohibitive at 30 Hz 3 MP. | Processing throughput. | Measure in probe; if slow, keep RGB at ≤10 Hz for live processors and use `latest` policy. |
 
+### 0.7 Hardware probe findings (Ricky's Mac, SDK 2.5.0, glasses 1M0YDD5H980277, 2026‑10‑10)
+
+| Id | Result | Evidence |
+|---|---|---|
+| USB control | **works without adb**: `DeviceClient.usb_devices()` raises "adb executable unavailable" on macOS, but `usb_network_devices()` returns the USB‑NCM link (`192.168.68.165`) and `connect()` succeeds in 0.4 s. The CLI logs "Using known device IP … for recording manager on port **23456**" ⇒ *all* control is IP‑based, USB just provides a network link. | PRE, A‑1a, CERTS |
+| BLE control | **works on this Mac**: `aria_gen2 auth check` fell back to BLE, connected by scan and reported "authenticated" (19 s). | PRE |
+| `Device.status()` | all fields as in the stub; device was on `HomeWifi` as STA with `wifi_ip_address=192.168.1.41`, mode `DeviceMode.Research`. | STATUS |
+| Profiles | native: `profile8`, `profile9`, `profile10`, `mp_streaming_demo`; cloud: `low_latency_streaming`, `profile8_ml_et`, `low_latency_streaming_capture`. | PROFILES |
+| **A‑5** | **answered**: `get_data_quality_stats()` returns JSON `{"data_type":"GetSensorHealthStats","data":{"sensor_health_stats_list":[{sensor_type, expected_frame_count, actual_frame_count, dropped_frame_count, early_time_error_count, late_time_error_count, total_time_error_count, score, sequential_drops}]}}` with sensor types `AUDIO, CAMERA_POV, CAMERA_SLAM_1..4, IMU_1, IMU_2, MAG, BARO, PPG, ET_RESULT, HT_RESULT, VIO_RESULT, ALS, VIO_HIGH_FREQUENCY_POSE, UTC_TIME_SYNC, TEMPERATURE_ACROPOLIS, TEMPERATURE_SOC, PROXIMITY`. It answers even when not streaming (stats of the last/ongoing session). | A‑5 |
+| **A‑6** | `set_observer(obj)` accepts a plain Python object; no callback fired during the run (no disconnect happened), so the method name it expects is still unknown → polling `is_connected()` / `connections()` remains the plan. | A‑6, OBSERVER |
+| A‑1b (control over Wi‑Fi STA) | inconclusive: `DeviceTarget(ip=192.168.1.41)` failed with "Operation canceled"; the Mac was probably not on `HomeWifi`. The probe now checks TCP reachability of `ip:23456` first. | A‑1b |
+| A‑1c/A‑2/A‑4/A‑8 | blocked by two probe bugs (ANSI codes in the parsed cert name ⇒ "(9) Failed to find specified certificates"; kwarg clash in the hotspot step), both fixed. **Re‑run needed.** | |
+
 ---
 
 ## 1. Architecture
