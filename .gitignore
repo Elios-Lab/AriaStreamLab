@@ -24,3 +24,6 @@ probe_report*.json
 .idea/
 .vscode/
 *.swp
+
+# tool caches
+.import_linter_cache/
