@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# AriaStreamLab
+sessions/
+*.vrs
+!tests/data/*.vrs
+probe_report*.json
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
+*.swp

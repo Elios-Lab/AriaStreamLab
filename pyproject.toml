@@ -1,0 +1,147 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ariastreamlab"
+version = "0.1.0.dev0"
+description = "Experiment-oriented framework for Meta Project Aria Gen 2 glasses: acquisition, realtime processing, storage, replay and monitoring."
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+authors = [{ name = "Riccardo Berta", email = "riccardo.berta@unige.it" }]
+keywords = ["project-aria", "egocentric", "sensors", "iot", "research", "teaching"]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Intended Audience :: Science/Research",
+  "Intended Audience :: Education",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering",
+  "Typing :: Typed",
+]
+dependencies = [
+  "numpy>=1.26",
+  "pydantic>=2.6",
+  "pyarrow>=15",
+  "structlog>=24",
+  "typer>=0.12",
+  "rich>=13",
+  "opencv-python-headless>=4.9",
+]
+
+[project.optional-dependencies]
+# Meta's SDK. Only `ariastreamlab.acquisition.aria_gen2` imports it.
+aria = ["projectaria-client-sdk~=2.5", "projectaria-tools~=2.3"]
+dashboard = ["nicegui>=2.0"]
+rerun = ["rerun-sdk~=0.33.0"]
+dev = [
+  "pytest>=8",
+  "pytest-timeout>=2.3",
+  "ruff>=0.6",
+  "mypy>=1.11",
+  "import-linter>=2.0",
+  "pre-commit>=3",
+]
+
+[project.scripts]
+ariastreamlab = "ariastreamlab.cli.main:app"
+
+[project.entry-points."ariastreamlab.processors"]
+# Third-party packages register processors here: "<type>" = "<module>:<Class>"
+
+[project.urls]
+Documentation = "https://github.com/riccardoberta/AriaStreamLab#readme"
+Source = "https://github.com/riccardoberta/AriaStreamLab"
+
+[tool.hatch.build.targets.wheel]
+packages = ["ariastreamlab"]
+
+# --------------------------------------------------------------------------- ruff
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+src = ["ariastreamlab", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "N", "SIM", "RUF", "PT", "ARG", "C4", "T20", "D"]
+ignore = [
+  "D100", "D104", "D105", "D107",  # module/package/magic/__init__ docstrings not required
+  "D203", "D213",                  # incompatible pairs (we use D211 / D212)
+  "RUF012",
+  "RUF001", "RUF002", "RUF003",  # typographic characters in docs/strings are intentional
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D", "ARG", "T20", "SIM117"]
+"scripts/**" = ["T20", "D"]
+"ariastreamlab/cli/**" = ["T20"]
+"ariastreamlab/core/registry.py" = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["ariastreamlab"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+# --------------------------------------------------------------------------- mypy
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_unreachable = true
+pretty = true
+packages = ["ariastreamlab"]
+
+[[tool.mypy.overrides]]
+module = ["aria.*", "projectaria_tools.*", "cv2.*", "pyarrow.*", "nicegui.*", "rerun.*"]
+ignore_missing_imports = true
+
+# --------------------------------------------------------------------------- pytest
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --timeout=120"
+markers = [
+  "hardware: requires physical Aria Gen 2 glasses (deselected by default)",
+  "slow: takes more than a few seconds",
+]
+filterwarnings = ["error::DeprecationWarning:ariastreamlab.*"]
+
+# --------------------------------------------------------------------------- import-linter
+[tool.importlinter]
+root_package = "ariastreamlab"
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Only the Aria adapter may import Meta's SDK"
+type = "forbidden"
+source_modules = [
+  "ariastreamlab.api",
+  "ariastreamlab.config",
+  "ariastreamlab.core",
+  "ariastreamlab.timing",
+  "ariastreamlab.acquisition.base",
+  "ariastreamlab.acquisition.mock",
+  "ariastreamlab.processing",
+  "ariastreamlab.storage",
+  "ariastreamlab.events",
+  "ariastreamlab.monitoring",
+  "ariastreamlab.dashboard",
+  "ariastreamlab.cli",
+]
+forbidden_modules = ["aria", "projectaria_tools"]
+allow_indirect_imports = false
+
+[[tool.importlinter.contracts]]
+name = "Core never depends on higher layers"
+type = "layers"
+layers = [
+  "ariastreamlab.cli",
+  "ariastreamlab.api",
+  "ariastreamlab.dashboard",
+  "ariastreamlab.acquisition | ariastreamlab.processing | ariastreamlab.storage | ariastreamlab.events",
+  "ariastreamlab.monitoring",
+  "ariastreamlab.config",
+  "ariastreamlab.timing",
+  "ariastreamlab.core",
+]

@@ -1,0 +1,21 @@
+{
+  "extends": "preset:base",
+  "experiment": { "name": "gaze_experiment", "description": "RGB + eye cameras + on-device eye gaze" },
+  "streams": {
+    "rgb": { "enabled": true, "fps": 10, "resolution": "2016x1512" },
+    "et": { "enabled": true },
+    "eye_gaze": { "enabled": true, "rate_hz": 30 },
+    "imu": { "enabled": true }
+  },
+  "processors": [
+    {
+      "id": "gaze_on_rgb",
+      "type": "gaze.project_to_rgb",
+      "inputs": ["rgb", "eye_gaze"],
+      "outputs": ["gaze_rgb"],
+      "execution": { "queue_size": 2, "drop_policy": "latest", "join": "nearest", "tolerance_ms": 40 },
+      "save_output": true
+    }
+  ],
+  "dashboard": { "show": ["rgb", "et_left", "et_right", "eye_gaze", "gaze_rgb"] }
+}

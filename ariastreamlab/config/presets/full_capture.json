@@ -1,0 +1,18 @@
+{
+  "extends": "preset:base",
+  "experiment": { "name": "full_capture", "description": "Every live stream the SDK exposes, at profile defaults" },
+  "streams": {
+    "rgb": { "enabled": true, "fps": 10 },
+    "slam": { "enabled": true, "fps": 10 },
+    "et": { "enabled": true },
+    "imu": { "enabled": true },
+    "magnetometer": { "enabled": true },
+    "barometer": { "enabled": true },
+    "audio": { "enabled": true },
+    "eye_gaze": { "enabled": true },
+    "hand_tracking": { "enabled": true },
+    "vio": { "enabled": true },
+    "ppg": { "enabled": true }
+  },
+  "dashboard": { "show": ["rgb", "slam_front_left", "slam_front_right", "imu_left", "eye_gaze", "vio"] }
+}

@@ -1,0 +1,56 @@
+"""Experiment configuration: Pydantic models, loader with presets, JSON Schema export."""
+
+from ariastreamlab.config.loader import (
+    deep_merge,
+    dump_resolved,
+    load_config,
+    load_dict,
+    load_preset,
+    preset_names,
+    resolve_extends,
+)
+from ariastreamlab.config.models import (
+    SCHEMA_VERSION,
+    ConnectionConfig,
+    DashboardConfig,
+    DeviceConfig,
+    ExecutionConfig,
+    ExperimentConfig,
+    ExperimentInfo,
+    HotspotConfig,
+    LoggingConfig,
+    MockConfig,
+    ProcessorConfig,
+    ProfileConfig,
+    ReplayConfig,
+    StorageConfig,
+    StreamConfig,
+)
+from ariastreamlab.config.schema import export_json_schema, export_json_schema_text
+
+__all__ = [
+    "SCHEMA_VERSION",
+    "ConnectionConfig",
+    "DashboardConfig",
+    "DeviceConfig",
+    "ExecutionConfig",
+    "ExperimentConfig",
+    "ExperimentInfo",
+    "HotspotConfig",
+    "LoggingConfig",
+    "MockConfig",
+    "ProcessorConfig",
+    "ProfileConfig",
+    "ReplayConfig",
+    "StorageConfig",
+    "StreamConfig",
+    "deep_merge",
+    "dump_resolved",
+    "export_json_schema",
+    "export_json_schema_text",
+    "load_config",
+    "load_dict",
+    "load_preset",
+    "preset_names",
+    "resolve_extends",
+]

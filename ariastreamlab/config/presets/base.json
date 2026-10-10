@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "experiment": { "name": "experiment", "participant": "P000" },
+  "device": {
+    "connection": { "preferred_control": "auto", "streaming_interface": "wifi_sap" },
+    "profile": { "mode": "predefined" }
+  },
+  "streams": {},
+  "processors": [],
+  "dashboard": { "enabled": true },
+  "storage": { "root": "./sessions", "save_raw_vrs": true }
+}

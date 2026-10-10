@@ -1,0 +1,9 @@
+{
+  "extends": "preset:base",
+  "experiment": { "name": "rgb_imu", "description": "RGB camera at 10 fps plus both IMUs" },
+  "streams": {
+    "rgb": { "enabled": true, "fps": 10, "resolution": "2016x1512" },
+    "imu": { "enabled": true, "rate_hz": 800 }
+  },
+  "dashboard": { "show": ["rgb", "imu_left", "imu_right"] }
+}

@@ -1,0 +1,32 @@
+{
+  "extends": "preset:base",
+  "experiment": { "name": "mock_experiment", "participant": "P000", "description": "Synthetic data for development without glasses" },
+  "streams": {
+    "rgb": { "enabled": true, "fps": 10 },
+    "imu": { "enabled": true },
+    "eye_gaze": { "enabled": true },
+    "vio": { "enabled": true }
+  },
+  "processors": [
+    {
+      "id": "motion_detector",
+      "type": "imu.motion_detector",
+      "inputs": ["imu_left"],
+      "outputs": ["head_motion"],
+      "parameters": { "threshold": 0.15 },
+      "execution": { "queue_size": 64, "drop_policy": "drop_oldest" },
+      "save_output": true
+    },
+    {
+      "id": "rgb_small",
+      "type": "image.resize",
+      "inputs": ["rgb"],
+      "outputs": ["rgb_small"],
+      "parameters": { "width": 320, "height": 240 },
+      "execution": { "queue_size": 2, "drop_policy": "latest" },
+      "save_output": false
+    }
+  ],
+  "dashboard": { "show": ["rgb", "imu_left", "eye_gaze", "head_motion"] },
+  "mock": { "seed": 42, "jitter_ms": 0.1 }
+}

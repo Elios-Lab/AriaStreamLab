@@ -1,0 +1,4 @@
+{
+  "extends": "preset:rgb_imu",
+  "experiment": { "name": "rgb_imu_capture", "participant": "P001", "description": "First capture: RGB 10 fps + both IMUs" }
+}
