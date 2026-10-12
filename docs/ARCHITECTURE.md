@@ -116,6 +116,25 @@ Pre‑defined profiles: `profile8` (recording, general), `profile9` (streaming, 
 | A‑1b (control over Wi‑Fi STA) | inconclusive: `DeviceTarget(ip=192.168.1.41)` failed with "Operation canceled"; the Mac was probably not on `HomeWifi`. The probe now checks TCP reachability of `ip:23456` first. | A‑1b |
 | A‑1c/A‑2/A‑4/A‑8 | blocked by two probe bugs (ANSI codes in the parsed cert name ⇒ "(9) Failed to find specified certificates"; kwarg clash in the hotspot step), both fixed. **Re‑run needed.** | |
 
+### 0.8 Hardware probe findings — run 4 (2026‑10‑10 10:47 UTC, SDK 2.5.1, `--hotspot --interface wifi_sap`)
+
+First run with a complete streaming session. Everything below is measured, not assumed.
+
+| Topic | Result |
+|---|---|
+| **A‑2 hotspot control — answered** | `aria_gen2 device hotspot start` succeeded **over BLE** (the CLI found no USB/Wi‑Fi device at that instant and fell back to BLE in 3.9 s). Output format: `Wifi hotspot status / enabled: 1 / ssid: Aria-XXXXXXXX / passphrase: 8 digits / wifi band: BAND_2GHZ / wifi channel bandwidth: BW_20MHZ` (defaults on this firmware are 2.4 GHz / 20 MHz, not the 5 GHz / 40 MHz the docs state → the adapter passes the band explicitly). `hotspot status` works over USB‑IP. |
+| **A‑1c/A‑1d streaming control — answered for USB‑IP** | `set_streaming_config(WIFI_SAP, batch 800 ms, cert name)` + `start_streaming()` returned in 0.73 s; `stop_streaming()` in 2.55 s; `get_streaming_info()` reported `profile9 / WIFI_SAP`. |
+| **Data path — not yet wireless** | The laptop had not actually joined the hotspot (no default gateway captured), so the glasses reached `oatmeal_server.local` over the USB‑NCM link: `connections() → client_ip 192.168.68.165`. The 20 s session is therefore a *USB data path with a WIFI_SAP profile*. A‑3 (device finds the laptop over the hotspot) is still open; probe v4 verifies the join and offers `--unplug`. |
+| **Stream rates (profile9, 20 s)** | imu‑left/right 799/797 Hz, vio_high_frequency 799 Hz, mag 100 Hz, baro 50 Hz, ppg 128 Hz, mic 50 chunks/s (20 ms), slam ×4 10 Hz (512×512 uint8), rgb 5 Hz, vio 10 Hz, eyegaze 15.9 Hz, handtracking 15.0 Hz (profile9 nominal is 30 Hz for both → **MP outputs arrive at half rate over this path; to be re‑measured wirelessly**), calibration received once. Zero out‑of‑order samples within any stream. |
+| **Callback threading — design‑relevant** | Image, IMU and MP callbacks each fire from **one** SDK thread, but `baro`, `mag`, `ppg` and `audio` callbacks were invoked from **10–13 different threads**. The adapter must treat every callback as re‑entrant: per‑stream sequence counters under a lock, no per‑stream "last sample" state without a lock. |
+| **A‑8 image decode — half answered** | SLAM frames: `to_numpy_array()` p50 0.008 ms (they arrive as raw mono, `RAW_SLAM_CAMERA_FRAME`). **RGB: 95 frames received but no array could be produced** — the bare `StreamDataInterface(True)` does not decode H.265 for the external wheel; Meta's `StreamReceiver` interposes `aria.image_decoder.ImageDecoder` (hardware‑accelerated on macOS) for exactly this reason. The adapter will use `StreamReceiver`/`ImageDecoder`, not the raw interface; probe v4 measures that decoder. The 25–57 ms tail in the probe's numbers is the failed RGB attempt, not SLAM. |
+| **TicSync** | `TimeSyncRef.is_connected() and is_valid()` were both true during the session → host↔device latency is measurable live. |
+| **A‑4 VRS — open** | `record_to_vrs()` was configured and the stream ran, but `create_vrs_data_provider()` returned `None` immediately after `server.stop()` (file not flushed/closed yet, or the writer needs the handler to be released first). Probe v4 writes the file next to the script, waits 3 s and reports its size so the file can be inspected. |
+| A‑6 | still no observer callback even across stop/start; polling confirmed as the design. |
+| A‑1b | `192.168.1.41:23456` unreachable: expected, the glasses' Wi‑Fi STA radio was off (`wifi_enabled: false`). |
+
+Consequences for Phase 4: (1) the adapter builds on `aria.stream_receiver.StreamReceiver` (decoder + per‑stream queues) rather than on `StreamDataInterface` directly; (2) every SDK callback is treated as multi‑threaded; (3) hotspot band/bandwidth are always sent explicitly; (4) BLE is a working control path for hotspot start on macOS, so the untethered flow can start without the cable after the one‑time pairing.
+
 ---
 
 ## 1. Architecture

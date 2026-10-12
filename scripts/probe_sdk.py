@@ -25,7 +25,6 @@ import shutil
 import socket
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import traceback
@@ -89,6 +88,33 @@ def tcp_reachable(ip: str, port: int, timeout: float = 3.0) -> bool:
         return False
 
 
+def _hotspot_gateway() -> str:
+    """Default gateway on macOS (the glasses' IP once the laptop joined the hotspot)."""
+    try:
+        gw = subprocess.run(
+            ["route", "-n", "get", "default"], capture_output=True, text=True, timeout=10
+        ).stdout
+    except Exception:
+        return ""
+    for line in gw.splitlines():
+        if "gateway:" in line:
+            return line.split(":", 1)[1].strip()
+    return ""
+
+
+def _mac_wifi_ssid() -> str:
+    """Current Wi-Fi SSID on macOS (best effort)."""
+    for cmd in (["networksetup", "-getairportnetwork", "en0"], ["ipconfig", "getsummary", "en0"]):
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=10).stdout
+        except Exception:
+            continue
+        m = re.search(r"(?:Current Wi-Fi Network|SSID)\s*:\s*(.+)", out)
+        if m:
+            return m.group(1).strip()
+    return ""
+
+
 def run_cli(*args: str, timeout: float = 90) -> dict[str, Any]:
     """Run the bundled ``aria_gen2`` CLI and capture everything.
 
@@ -129,6 +155,13 @@ def host_info() -> dict[str, Any]:
     return info
 
 
+def _safe_usb_net(client: Any) -> list[Any]:
+    try:
+        return list(client.usb_network_devices())
+    except Exception:
+        return []
+
+
 def status_to_dict(status: Any) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for name in dir(status):
@@ -156,6 +189,8 @@ class CallbackCounter:
         self.host_last: dict[str, int] = {}
         self.out_of_order: Counter[str] = Counter()
         self.image_shapes: dict[str, Any] = {}
+        self.image_errors: dict[str, str] = {}
+        self.pixel_formats: dict[str, str] = {}
         self.threads: defaultdict[str, set[int]] = defaultdict(set)
         self.calibration_received = False
         self.decode_ms: list[float] = []
@@ -187,6 +222,8 @@ class CallbackCounter:
                     "image_shape": self.image_shapes.get(stream),
                 }
             out["_calibration_received"] = self.calibration_received
+            out["_image_errors"] = dict(self.image_errors)
+            out["_pixel_formats"] = dict(self.pixel_formats)
             if self.decode_ms:
                 arr = sorted(self.decode_ms)
                 out["_to_numpy_ms"] = {
@@ -205,15 +242,44 @@ def timedelta_ns(td: Any) -> int:
 def register_all(handler: Any, counter: CallbackCounter, camera_labels: dict[int, str]) -> None:
     """Register one counting callback per typed stream on a StreamDataInterface."""
 
+    try:
+        from aria.image_decoder import ImageDecoder
+
+        py_decoder: Any = ImageDecoder(hw_accel=platform.system() == "Darwin")
+    except Exception as exc:
+        py_decoder = None
+        counter.image_errors["_ImageDecoder"] = f"{type(exc).__name__}: {exc}"
+
     def image_cb(stream_prefix: str) -> Any:
         def cb(image_data: Any, record: Any) -> None:
             label = camera_labels.get(record.camera_id, f"{stream_prefix}-{record.camera_id}")
             counter.hit(label, record.capture_timestamp_ns)
-            if label not in counter.image_shapes or len(counter.decode_ms) < 200:
+            if label in counter.image_shapes and len(counter.decode_ms) >= 200:
+                return
+            try:
+                fmt = str(image_data.get_pixel_format())
+                counter.pixel_formats[label] = fmt
                 t0 = time.perf_counter()
                 arr = image_data.to_numpy_array()
                 counter.decode_ms.append((time.perf_counter() - t0) * 1e3)
-                counter.image_shapes[label] = [list(arr.shape), str(arr.dtype)]
+                counter.image_shapes[label] = [list(arr.shape), str(arr.dtype), "sdk"]
+            except Exception as exc:
+                counter.image_errors[label] = f"to_numpy_array: {type(exc).__name__}: {exc}"
+                if py_decoder is None:
+                    return
+                # Second chance: the Python H.265 decoder StreamReceiver uses for RGB.
+                try:
+                    t0 = time.perf_counter()
+                    ok = py_decoder.decode_image(image_data, record)
+                    dt = (time.perf_counter() - t0) * 1e3
+                    if ok:
+                        arr = image_data.to_numpy_array()
+                        counter.decode_ms.append(dt)
+                        counter.image_shapes[label] = [list(arr.shape), str(arr.dtype), "python"]
+                    else:
+                        counter.image_errors[label] += " | ImageDecoder.decode_image returned False"
+                except Exception as exc2:
+                    counter.image_errors[label] += f" | ImageDecoder: {type(exc2).__name__}: {exc2}"
 
         return cb
 
@@ -259,11 +325,19 @@ def main() -> int:
     parser.add_argument("--ip", default="", help="device IP: connect over Wi-Fi instead of USB")
     parser.add_argument("--interface", choices=["usb", "wifi_sta", "wifi_sap"], default="usb")
     parser.add_argument("--hotspot", action="store_true", help="run `device hotspot start` (A-2)")
+    parser.add_argument(
+        "--unplug",
+        action="store_true",
+        help="after joining the hotspot and reconnecting over it, ask to unplug the USB cable "
+        "before start_streaming, so control AND data must go over Wi-Fi (A-1, A-3)",
+    )
     parser.add_argument("--profile", default="profile9")
     parser.add_argument("--batch-period-ms", type=int, default=None, help="default: 0/200/800")
     parser.add_argument("--duration", type=float, default=20.0, help="streaming seconds")
     parser.add_argument("--port", type=int, default=6768)
-    parser.add_argument("--vrs", default="", help="VRS output path (default: temp dir)")
+    parser.add_argument(
+        "--vrs", default="", help="VRS output path (default: ./probe_<utc>.vrs in the current dir)"
+    )
     parser.add_argument("--skip-replay", action="store_true")
     parser.add_argument("--out", default="probe_report.json")
     args = parser.parse_args()
@@ -418,21 +492,25 @@ def main() -> int:
                 hotspot_start=start,
                 hotspot_status=stat,
             )
+            text = start["stdout"] + stat["stdout"]
+            ssid = (re.search(r"ssid:\s*(\S+)", text) or [None, None])[1]
+            passphrase = (re.search(r"passphrase:\s*(\S+)", text) or [None, None])[1]
+            s.details["hotspot_ssid"] = ssid
             print(
-                "\n    >>> Now join the glasses' hotspot from this laptop, then press ENTER."
-                "\n    >>> (SSID/password should be in the output above or in the Companion App.)"
+                f"\n    >>> Join the glasses' hotspot from this laptop's Wi-Fi menu now:"
+                f"\n    >>>     SSID: {ssid}   password: {passphrase}"
+                "\n    >>> then press ENTER (the script checks that the Mac really joined)."
             )
             input()
-            try:
-                gw = subprocess.run(
-                    ["route", "-n", "get", "default"], capture_output=True, text=True, timeout=10
-                ).stdout
-                for line in gw.splitlines():
-                    if "gateway:" in line:
-                        hotspot_ip = line.split(":", 1)[1].strip()
-            except Exception:
-                pass
+            hotspot_ip = _hotspot_gateway()
             s.details["default_gateway_after_join"] = hotspot_ip
+            s.details["mac_wifi_ssid"] = _mac_wifi_ssid()
+            if not hotspot_ip:
+                print(
+                    "    >>> No default gateway found; the laptop is apparently not on the hotspot"
+                )
+            else:
+                s.details[f"gateway_tcp_{CONTROL_PORT}"] = tcp_reachable(hotspot_ip, CONTROL_PORT)
         except Exception as exc:
             report.fail(s, exc)
 
@@ -453,6 +531,26 @@ def main() -> int:
             dev2 = client.connect(sdk.DeviceTarget(ip=control_ip))
             report.finish(s, "PASS", serial=dev2.serial(), connection_id=dev2.connection_id())
             device = dev2
+            if args.unplug:
+                print(
+                    "\n    >>> Wi-Fi control connection established. UNPLUG the USB cable now,"
+                    "\n    >>> wait 3 s, then press ENTER. Everything must now go over Wi-Fi."
+                )
+                input()
+                time.sleep(1)
+                s2 = report.step("A-1b2", "status over Wi-Fi after unplugging USB")
+                try:
+                    st = status_to_dict(device.status())
+                    report.finish(
+                        s2,
+                        "PASS",
+                        usb_network_devices=[
+                            {"ip": t.ip, "serial": t.serial} for t in client.usb_network_devices()
+                        ],
+                        **st,
+                    )
+                except Exception as exc:
+                    report.fail(s2, exc)
         except Exception as exc:
             report.fail(s, exc)
             print("    (continuing with the USB connection)")
@@ -467,8 +565,9 @@ def main() -> int:
     if batch is None:
         batch = {"usb": 0, "wifi_sta": 200, "wifi_sap": 800}[args.interface]
 
-    vrs_dir = tempfile.mkdtemp(prefix="asl_probe_")
-    vrs_path = args.vrs or os.path.join(vrs_dir, "probe.vrs")
+    vrs_path = args.vrs or os.path.abspath(
+        f"probe_{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}.vrs"
+    )
 
     s = report.step(
         "CERTS", "install streaming certs once (so start_streaming does not rotate them)"
@@ -551,6 +650,17 @@ def main() -> int:
             "PASS" if sum(counter.count.values()) > 0 else "FAIL",
             streams=summary,
             connections=server.connections() if server is not None else None,
+            data_path=(
+                "usb-ncm"
+                if any(
+                    c.get("client_ip") == t.ip
+                    for c in (server.connections() if server is not None else [])
+                    for t in _safe_usb_net(client)
+                )
+                else "wifi"
+            )
+            if server is not None and server.connections()
+            else "none",
             streaming_info={
                 "is_streaming": info.is_streaming,
                 "profile": info.profile_name,
@@ -603,8 +713,18 @@ def main() -> int:
     # ---------------------------------------------------------------- A-4 VRS
     s = report.step("A-4a", "host-recorded VRS opens with projectaria_tools")
     try:
-        size = os.path.getsize(vrs_path)
+        time.sleep(3)  # let the SDK's VRS writer close the file
+        size = os.path.getsize(vrs_path) if os.path.exists(vrs_path) else -1
+        s.details["vrs_path"] = vrs_path
+        s.details["vrs_bytes"] = size
+        if size <= 0:
+            raise RuntimeError(f"VRS file missing or empty: {vrs_path} ({size} bytes)")
         provider = data_provider.create_vrs_data_provider(vrs_path)
+        if provider is None:
+            raise RuntimeError(
+                f"create_vrs_data_provider returned None for {vrs_path} ({size} bytes); "
+                "keep the file, it is needed to diagnose this"
+            )
         streams = provider.get_all_streams()
         per_stream: dict[str, Any] = {}
         for sid in streams:
