@@ -695,7 +695,55 @@ def main() -> int:
     dec = counter.summary().get("_to_numpy_ms")
     report.finish(s, "PASS" if dec else "SKIP", to_numpy_ms=dec)
 
-    s = report.step("A-1d", "stop_streaming over the same transport")
+    # ---------------------------------------------------------------- A-1e wireless control
+    # The IP the glasses streamed FROM is the one to try for control over Wi-Fi: run 5 showed
+    # the hotspot gateway (192.168.133.253) does not listen on 23456 while the stream came
+    # from 192.168.37.28.
+    stream_ip = ""
+    if server is not None:
+        for c in server.connections():
+            if c.get("client_ip") and c["client_ip"] not in {t.ip for t in _safe_usb_net(client)}:
+                stream_ip = c["client_ip"]
+    if args.interface != "usb" and stream_ip:
+        s = report.step("A-1e", f"control over Wi-Fi via the streaming source IP {stream_ip}")
+        try:
+            reachable = tcp_reachable(stream_ip, CONTROL_PORT)
+            s.details[f"tcp_reachable_{CONTROL_PORT}"] = reachable
+            if not reachable:
+                raise RuntimeError(f"{stream_ip}:{CONTROL_PORT} not reachable")
+            dev3 = client.connect(sdk.DeviceTarget(ip=stream_ip))
+            st3 = status_to_dict(dev3.status())
+            report.finish(s, "PASS", serial=dev3.serial(), **st3)
+            device = dev3
+            if args.unplug:
+                print(
+                    "\n    >>> Control over Wi-Fi works and the stream is still running."
+                    "\n    >>> UNPLUG the USB cable now, wait 5 s, then press ENTER."
+                )
+                input()
+                time.sleep(1)
+                s2 = report.step("A-1f", "status + stream health over Wi-Fi after unplugging USB")
+                try:
+                    before = sum(counter.count.values())
+                    time.sleep(5)
+                    after = sum(counter.count.values())
+                    st = status_to_dict(device.status())
+                    report.finish(
+                        s2,
+                        "PASS" if after > before else "FAIL",
+                        samples_in_5s_after_unplug=after - before,
+                        connections=server.connections() if server is not None else None,
+                        usb_network_devices=[
+                            {"ip": t.ip, "serial": t.serial} for t in _safe_usb_net(client)
+                        ],
+                        **st,
+                    )
+                except Exception as exc:
+                    report.fail(s2, exc)
+        except Exception as exc:
+            report.fail(s, exc)
+
+    s = report.step("A-1d", "stop_streaming over the current control transport")
     try:
         t0 = time.monotonic()
         device.stop_streaming()
@@ -710,11 +758,23 @@ def main() -> int:
     except Exception as exc:
         report.fail(s, exc)
 
+    # Run 5 left a 96-byte VRS: the SDK's writer finalises the file when the
+    # StreamDataInterface is destroyed (Meta's StreamReceiver.stop_server sets it to None).
+    handler_box.clear()
+    server = None
+    import gc
+
+    gc.collect()
+
     # ---------------------------------------------------------------- A-4 VRS
     s = report.step("A-4a", "host-recorded VRS opens with projectaria_tools")
     try:
-        time.sleep(3)  # let the SDK's VRS writer close the file
-        size = os.path.getsize(vrs_path) if os.path.exists(vrs_path) else -1
+        size = -1
+        for _ in range(10):  # up to 10 s for the writer to flush after the handler is released
+            time.sleep(1)
+            size = os.path.getsize(vrs_path) if os.path.exists(vrs_path) else -1
+            if size > 4096:
+                break
         s.details["vrs_path"] = vrs_path
         s.details["vrs_bytes"] = size
         if size <= 0:

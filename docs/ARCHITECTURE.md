@@ -135,6 +135,17 @@ First run with a complete streaming session. Everything below is measured, not a
 
 Consequences for Phase 4: (1) the adapter builds on `aria.stream_receiver.StreamReceiver` (decoder + per‑stream queues) rather than on `StreamDataInterface` directly; (2) every SDK callback is treated as multi‑threaded; (3) hotspot band/bandwidth are always sent explicitly; (4) BLE is a working control path for hotspot start on macOS, so the untethered flow can start without the cable after the one‑time pairing.
 
+### 0.9 Hardware probe findings — run 5 (2026‑10‑13 11:16 UTC, `--hotspot --interface wifi_sap --unplug`)
+
+| Topic | Result |
+|---|---|
+| **A‑3 data over the hotspot — answered** | The laptop joined `Aria-M2FHCZP6` (default gateway `192.168.133.253`); the glasses then connected to `oatmeal_server.local:6768` from **`192.168.37.28`**, which is neither the USB‑NCM address (`192.168.212.2` this time) nor the hotspot gateway ⇒ the device resolves the laptop's mDNS name across the hotspot and pushes data over Wi‑Fi. All 15 streams ran at nominal rates for 20 s with batch 800 ms and **zero out‑of‑order samples**; eye gaze / hand tracking arrived at 25 Hz (nominal 30). TicSync valid. |
+| **Wi‑Fi control — partly open** | Port 23456 is **not** open on the hotspot gateway address, so `DeviceTarget(ip=<gateway>)` fails; `--unplug` therefore never triggered. Hypothesis for v5: control listens on the same address the stream comes from (`192.168.37.28`); probe v5 tries exactly that after the stream is up, then unplugs. Fallback remains the documented tethered start. Hotspot band this time was 5 GHz / 40 MHz (2.4 GHz / 20 MHz in run 4 → firmware picks; the adapter will always pass `--wifi-band`). |
+| **A‑8 RGB decode — answered** | `ImageData.to_numpy_array()` on an undecoded RGB frame raises `RuntimeError: bad_optional_access` (pixel format 5 = H.265); `aria.image_decoder.ImageDecoder(hw_accel=True).decode_image()` turns it into `1920×2560×3 uint8` ("python" path). Cost over 200 frames mixed SLAM+RGB: p50 0.29 ms, p95 6.2 ms, max 87 ms (the 5‑MP RGB decodes). SLAM frames arrive raw (pixel format 1). ⇒ The adapter uses `StreamReceiver`/`ImageDecoder`; RGB at 5–10 fps costs ≤ 0.9 s of decoder time per second worst case, fine on one thread. |
+| **A‑4 VRS — cause found** | `record_to_vrs()` left a **96‑byte** file: the SDK's VRS writer only finalises when the `StreamDataInterface` is destroyed (Meta's `StreamReceiver.stop_server()` sets it to `None`); the probe kept a reference. v5 releases it and waits for the flush. Design consequence: the raw recorder's `close()` must drop the handler and wait for the file size to settle before the manifest is finalised. |
+| Threads | confirmed again: baro/mag/ppg/audio callbacks from 10–11 threads, images/IMU/MP from one. |
+| Quality stats | during streaming `expected_frame_count` is 0 for every sensor and `actual_frame_count` counts up; `early/late_time_error_count` appear on MAG (1/1) and VIO‑HF (6/3) → the parser reports actual counts and timestamp errors, and treats `expected == 0` as "unknown", not as 100 % loss. |
+
 ---
 
 ## 1. Architecture
