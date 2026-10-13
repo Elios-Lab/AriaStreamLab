@@ -336,7 +336,9 @@ def main() -> int:
     parser.add_argument("--duration", type=float, default=20.0, help="streaming seconds")
     parser.add_argument("--port", type=int, default=6768)
     parser.add_argument(
-        "--vrs", default="", help="VRS output path (default: ./probe_<utc>.vrs in the current dir)"
+        "--vrs",
+        default="",
+        help="VRS output DIRECTORY (the SDK names the file); default ./probe_<utc>.vrs/",
     )
     parser.add_argument(
         "--raw-interface",

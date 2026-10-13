@@ -90,7 +90,7 @@ Everything below was read from the installed wheel (`aria/sdk_gen2.pyi`, the run
 
 Pre‑defined profiles: `profile8` (recording, general), `profile9` (streaming, low bandwidth, RGB 5 Hz, no ET cams), `profile10` (recording, RGB 30 Hz 3 MP), `mp_streaming_demo` (streaming, RGB 10 Hz, VIO/gaze/hand). Custom profile JSON keys: `name, description, imus{rate_hz}, magnetometer, barometer, audio{sample_rate, frame_period, sample_format, encoding_format, opus_config}, gps, ble{period_ms,duration_ms}, wifi{period_ms,scan_mode}, slam_cameras{rate_hz, encoding, video_config.cqp.qp|cbr}, et_cameras{…, resolution, ir_led}, rgb_camera{rate_hz, resolution, width, height, encoding, video_config}, et{rate_hz}, ht{rate_hz}, vio{rate_hz}, device_info{period_ms}, ppg, temperature, als{rate_hz, exposure_time_us}, vio_high_frequency_pose{rate_hz}, tags`. Meta explicitly labels custom profiles "not recommended for general use".
 
-### 0.6 Assumptions to verify on hardware
+### 0.6 Assumptions to verify on hardware (all verified by 2026‑10‑13 — see §0.7–§0.11)
 
 | Id | Assumption | Why it matters | How we verify |
 |---|---|---|---|
@@ -167,6 +167,29 @@ Consequences for Phase 4: (1) the adapter builds on `aria.stream_receiver.Stream
 6. `DeviceClient.connect(DeviceTarget(ip=<that address>))` → from now on status, quality stats and `stop_streaming()` go over Wi‑Fi; the cable can be removed.
 
 Open question for a later probe: whether step 4 also works over the Wi‑Fi address *before* any stream exists (i.e. start without the cable). The address is only learned from an active stream today; it may be stable across sessions (`192.168.37.28` in runs 5 and 6), which would make a fully cable‑free start possible.
+
+### 0.11 Run 7 (2026‑10‑13 11:30 UTC) and offline verification of the recordings — **A‑4 answered, all assumptions closed**
+
+Run 7 repeated run 6 (wireless control, unplug, stop over Wi‑Fi: all PASS again) and the "96‑byte VRS" turned out to be a probe misreading: **`StreamDataInterface.record_to_vrs(path)` treats `path` as a directory and writes `<YYYY-MM-DD-HH:MM:SS>.vrs` inside it** (Meta's sample calls the flag "output directory"). The three streaming runs left 35 MB, 91 MB and 94 MB recordings. Verified in the Linux VM on Ricky's Mac with `projectaria_tools` 2.3.0 and the client SDK 2.5.1 (both have aarch64 wheels):
+
+| Check | Result |
+|---|---|
+| `create_vrs_data_provider()` on the host‑recorded file | opens; `DeviceVersion.Gen2`; factory calibration present; 18 streams + a UTC time stream (`285‑1`) — including **`temperature`, `als`, `battery-status` (502‑1)**, which have no typed live callback. 67 s session. |
+| Per‑stream records | imu‑left/right 44 650/44 546 (800 Hz), vio_high_frequency 43 556, mag 5 620, baro 2 783, ppg 7 201, mic 2 795 chunks, SLAM ×4 ≈ 558 (10 Hz), RGB 271 (5 Hz), eyegaze/handtracking 1 694/1 691 (**25 Hz**, nominal 30), vio 564, als 565, temperature 1 440 (two sensors), battery 6. |
+| Image decode offline | RGB 2560×1920 H.265 → `(1920, 2560, 3) uint8` in ≈55 ms (software decoder in the VM); SLAM 512×512 H.265 → mono in 0.9 ms. **Note: SLAM is stored H.265‑encoded in the VRS although it is delivered raw live.** |
+| Timestamps | per‑stream device timestamps strictly monotonic; IMU median Δt 1 251.5 µs. `TimeDomain.UTC` supported, `TIC_SYNC` not present in a host recording. Cross‑stream lookup works (`get_eye_gaze_data_by_time_ns(…, CLOSEST)` → −16.5 ms from an RGB frame). |
+| **Transport gaps are real and visible** | all streams share a 7.9 s hole at t≈12.7 s and a 3.8 s hole at t≈42 s (the unplug moment) while the device reported `dropped_frame_count: 0` → those samples were lost between the glasses and the laptop, not on the device. The host VRS is therefore "what the host received", exactly as §1.2 states; the quality summary must show transport loss separately from device loss. |
+| `deliver_queued_sensor_data()` | 20 000 records in 2.5 s (ordered multi‑stream iteration; this is the primary replay backend). |
+| **`sdk.create_replay_source()` on the same file (A‑4b)** | replays the whole 67 s in **6.9 s at `speed_multiplier=0`**, delivers **exactly the record counts above** to the same typed callbacks, fires the calibration callback once, and — unlike live — invokes every callback from a single thread. Raw‑message callback shows `ALS_EVENT`, `TEMP_EVENT`, `BATTERY_STATUS_DATA`, `ACRO_INFO` ⇒ ALS/temperature/battery can be obtained live from raw messages. On teardown the SDK prints per‑queue `Enqueued/Processed/Dropped` counters. |
+
+**Design updates from runs 4–7** (applied to Phase 4):
+
+1. `RawRecorder` passes `raw/` as the directory; the manifest stores the actual file name the SDK chose (`raw.files[]`), and `close()` releases the `StreamReceiver` before finalising.
+2. The adapter is built on `aria.stream_receiver.StreamReceiver` (external build: `StreamDataInterface(False)` + Python/HW H.265 decoding for RGB, raw mono SLAM).
+3. Every SDK callback is treated as re‑entrant (10–13 threads observed for baro/mag/ppg/audio live; one thread in replay).
+4. Untethered flow: USB (or BLE) → hotspot start with explicit band → laptop joins → start streaming over USB → learn the Wi‑Fi control address from `connections()[0].client_ip` → reconnect over Wi‑Fi → cable out. Stop, status and quality stats over Wi‑Fi verified twice.
+5. Quality summary distinguishes device drops (`dropped_frame_count`) from transport gaps (missing device timestamps vs nominal rate) — both occurred in these runs.
+6. ALS, temperature and battery status: live via `register_raw_message_callback` (flatbuffer ids `ALS_EVENT`, `TEMP_EVENT`, `BATTERY_STATUS_DATA`), always present in the VRS.
 
 ---
 
