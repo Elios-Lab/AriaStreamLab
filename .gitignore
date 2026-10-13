@@ -16,7 +16,7 @@ htmlcov/
 # AriaStreamLab
 sessions/
 *.vrs
-!tests/data/*.vrs
+# real recordings are fixtures but never committed (size); see tests/data/README.md
 probe_report*.json
 
 # OS / editors

@@ -74,7 +74,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["D", "ARG", "T20", "SIM117"]
+"tests/**" = ["D", "ARG", "T20", "SIM117", "E501", "PT018"]
 "scripts/**" = ["T20", "D"]
 "ariastreamlab/cli/**" = ["T20"]
 "ariastreamlab/core/registry.py" = ["E501"]
@@ -130,7 +130,9 @@ source_modules = [
   "ariastreamlab.cli",
 ]
 forbidden_modules = ["aria", "projectaria_tools"]
-allow_indirect_imports = false
+# Direct imports only: the rest of the framework may reach the SDK *through* the adapter
+# (e.g. the replay factory loading the VRS backend lazily) but never import it itself.
+allow_indirect_imports = true
 
 [[tool.importlinter.contracts]]
 name = "Core never depends on higher layers"
@@ -139,7 +141,9 @@ layers = [
   "ariastreamlab.cli",
   "ariastreamlab.api",
   "ariastreamlab.dashboard",
-  "ariastreamlab.acquisition | ariastreamlab.processing | ariastreamlab.storage | ariastreamlab.events",
+  "ariastreamlab.acquisition | ariastreamlab.processing",
+  "ariastreamlab.storage",
+  "ariastreamlab.events",
   "ariastreamlab.monitoring",
   "ariastreamlab.config",
   "ariastreamlab.timing",

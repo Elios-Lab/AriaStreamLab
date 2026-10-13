@@ -340,12 +340,12 @@ _DESCRIPTORS: tuple[StreamDescriptor, ...] = (
         "audio",
         sdk_callback="audio",
         profile_key="audio",
-        nominal_rate_hz=16000,
+        nominal_rate_hz=50,
         parameters=_params(
             ParameterSpec("sample_rate_hz", 16000, choices=(16000,), profile_field="sample_rate")
         ),
         units=MappingProxyType({"samples": "int16"}),
-        description="Microphone array (7+1 channels, Opus on the wire)",
+        description="Microphone array (7+1 channels, 16 kHz, delivered as 20 ms chunks = 50 Hz)",
     ),
     StreamDescriptor(
         "gps",

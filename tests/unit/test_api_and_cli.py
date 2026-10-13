@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import threading
 from pathlib import Path
 
@@ -19,6 +20,7 @@ EXAMPLES = Path(__file__).resolve().parents[2] / "examples"
 def _fast_config() -> dict[str, object]:
     return {
         "experiment": {"name": "api_test", "participant": "P1"},
+        "storage": {"root": str(Path(tempfile.mkdtemp(prefix="asl_test_")) / "sessions")},
         "streams": {"rgb": {"fps": 10}, "imu": {}, "eye_gaze": {}},
         "mock": {"seed": 1, "jitter_ms": 0.0, "realtime": False},
     }
@@ -110,3 +112,52 @@ def test_cli_run_mock(tmp_path: Path) -> None:
     r = runner.invoke(app, ["run", str(cfg), "--duration", "0.1"])
     assert r.exit_code == 2
     assert "--mock" in r.output
+
+
+def test_cli_run_replay_inspect_roundtrip(tmp_path: Path) -> None:
+    cfg = tmp_path / "exp.json"
+    cfg.write_text(
+        json.dumps(
+            {
+                **_fast_config(),
+                "storage": {"root": str(tmp_path / "sessions"), "image_format": "png"},
+                "mock": {"realtime": False, "seed": 2},
+            }
+        )
+    )
+    r = runner.invoke(app, ["run", str(cfg), "--mock", "--duration", "0.5", "--report-every", "0"])
+    assert r.exit_code == 0, r.output
+    sessions = sorted((tmp_path / "sessions").iterdir())
+    assert len(sessions) == 1
+    r = runner.invoke(app, ["inspect", str(sessions[0])])
+    assert r.exit_code == 0, r.output
+    assert "completed" in r.output and "imu_left" in r.output
+    r = runner.invoke(app, ["inspect", str(sessions[0]), "--json"])
+    d = json.loads(r.stdout)
+    assert d["status"] == "completed" and d["raw"]["kind"] == "mock_files"
+    r = runner.invoke(
+        app, ["replay", str(sessions[0]), "--speed", "0", "--report-every", "0", "--json"]
+    )
+    assert r.exit_code == 0, r.output
+    assert "imu_left=400" in r.output
+    assert len(sorted((tmp_path / "sessions").iterdir())) == 2
+    r = runner.invoke(
+        app,
+        [
+            "replay",
+            str(sessions[0]),
+            "--speed",
+            "0",
+            "--streams",
+            "rgb",
+            "--no-storage",
+            "--report-every",
+            "0",
+        ],
+    )
+    assert r.exit_code == 0, r.output
+    assert "rgb=5" in r.output and "imu_left" not in r.output.split("\n")[-2]
+    r = runner.invoke(app, ["inspect", str(tmp_path)])
+    assert r.exit_code == 2 and "manifest.json" in r.output
+    r = runner.invoke(app, ["replay", str(tmp_path / "missing")])
+    assert r.exit_code == 2

@@ -1,8 +1,8 @@
 """The ``ariastreamlab`` command line.
 
-Commands available in this phase: ``streams``, ``presets``, ``schema``, ``inspect-config``,
-``run --mock``. ``doctor``, ``devices``, ``replay`` and ``inspect`` are added by the phases
-that implement the subsystems they need (see docs/ARCHITECTURE.md §12).
+Commands available so far: ``streams``, ``presets``, ``schema``, ``inspect-config``,
+``run --mock``, ``replay``, ``inspect``. ``doctor`` and ``devices`` arrive with the Aria
+adapter (Phase 4, see docs/ARCHITECTURE.md §12).
 """
 
 from __future__ import annotations
@@ -187,7 +187,11 @@ def run(
     ] = False,
     duration: Annotated[
         float | None,
-        typer.Option("--duration", "-d", help="Seconds to run (default: until Ctrl-C)"),
+        typer.Option(
+            "--duration",
+            "-d",
+            help="Seconds to run (default: until Ctrl-C); with a non-realtime mock, data seconds",
+        ),
     ] = None,
     report_every: Annotated[
         float, typer.Option("--report-every", help="Seconds between rate reports (0 = off)")
@@ -195,19 +199,141 @@ def run(
     json_summary: Annotated[
         bool, typer.Option("--json", help="Print the final summary as JSON")
     ] = False,
+    no_storage: Annotated[
+        bool, typer.Option("--no-storage", help="Do not write a session directory")
+    ] = False,
 ) -> None:
     """Run an experiment."""
     try:
-        exp = Experiment.from_json(path, mock=mock, duration_s=duration)
+        exp = Experiment.from_json(path, mock=mock, duration_s=duration, persist=not no_storage)
     except AriaStreamLabError as exc:
         _fail(exc)
         return
+    _drive(exp, report_every, json_summary)
+
+
+@app.command()
+def replay(
+    path: Annotated[Path, typer.Argument(help="session directory or .vrs file")],
+    speed: Annotated[
+        float | None, typer.Option("--speed", "-s", help="1 = realtime, 2 = 2x, 0 = max speed")
+    ] = None,
+    start: Annotated[
+        float | None, typer.Option("--start", help="Seconds into the recording")
+    ] = None,
+    end: Annotated[float | None, typer.Option("--end", help="Seconds into the recording")] = None,
+    backend: Annotated[
+        str | None, typer.Option("--backend", help="'tools' (pause/seek) or 'sdk' (Meta's engine)")
+    ] = None,
+    config: Annotated[
+        Path | None,
+        typer.Option(
+            "--config", "-c", help="experiment.json to apply (default: the session's own)"
+        ),
+    ] = None,
+    streams: Annotated[
+        str | None, typer.Option("--streams", help="Comma-separated subset of streams")
+    ] = None,
+    duration: Annotated[
+        float | None,
+        typer.Option(
+            "--duration",
+            "-d",
+            help="Seconds to run; at --speed 0 this is recorded time (a window end)",
+        ),
+    ] = None,
+    report_every: Annotated[float, typer.Option("--report-every")] = 2.0,
+    json_summary: Annotated[bool, typer.Option("--json")] = False,
+    no_storage: Annotated[
+        bool, typer.Option("--no-storage", help="Do not write a new session directory")
+    ] = False,
+) -> None:
+    """Replay a recorded session through the same pipeline."""
+    try:
+        exp = Experiment.replay(
+            path,
+            config=config,
+            speed=speed,
+            start_s=start,
+            end_s=end,
+            backend=backend,
+            streams=None
+            if streams is None
+            else [s.strip() for s in streams.split(",") if s.strip()],
+            duration_s=duration,
+            persist=not no_storage,
+        )
+    except AriaStreamLabError as exc:
+        _fail(exc)
+        return
+    _drive(exp, report_every, json_summary)
+
+
+@app.command()
+def inspect(
+    path: Annotated[Path, typer.Argument(help="session directory")],
+    repair: Annotated[
+        bool, typer.Option("--repair", help="Rebuild the timeline and mark a crashed session")
+    ] = False,
+    json_out: Annotated[bool, typer.Option("--json", help="Print JSON")] = False,
+) -> None:
+    """Show what a session directory contains (works on crashed sessions too)."""
+    from ariastreamlab.storage.inspect import inspect_session, summary_as_dict
+
+    try:
+        s = inspect_session(path, repair=repair)
+    except AriaStreamLabError as exc:
+        _fail(exc)
+        return
+    if json_out:
+        console.print_json(json.dumps(summary_as_dict(s), default=str))
+        return
+    m = s.manifest
+    colour = {"completed": "green", "running": "yellow", "crashed": "red"}.get(m.status, "white")
+    console.print(
+        f"[bold]{s.root.name}[/]  status=[{colour}]{m.status}[/]  origin={m.origin}"
+        f"  experiment={m.experiment}  participant={m.participant}"
+    )
+    console.print(
+        f"started {m.started_utc}  duration {m.duration_s if m.duration_s is not None else '?'} s"
+        f"  events {s.events}  timeline rows {s.timeline_rows}  total {s.total_bytes / 1e6:.1f} MB"
+    )
+    if m.raw.kind != "none":
+        console.print(
+            f"raw: {m.raw.kind} {', '.join(f for f, _ in s.raw_files) or m.raw.source or ''}"
+        )
+    table = Table(title="Stored streams")
+    for col in ("stream", "kind", "format", "payload", "samples", "files", "MB", "span s"):
+        table.add_column(col)
+    for x in s.streams:
+        table.add_row(
+            x.stream_id,
+            x.kind,
+            x.fmt,
+            x.payload,
+            str(x.samples),
+            str(x.files),
+            f"{x.bytes / 1e6:.2f}",
+            "" if x.duration_s is None else f"{x.duration_s:.1f}",
+        )
+    console.print(table)
+    for pb in s.problems:
+        console.print(f"[yellow]problem:[/] {pb}")
+    if s.repaired:
+        console.print("[green]repaired[/]")
+
+
+def _drive(exp: Experiment, report_every: float, json_summary: bool) -> None:
+    # with --json only the summary goes to stdout; progress goes to stderr so that
+    # `ariastreamlab run … --json | jq` works
+    out = err_console if json_summary else console
     try:
         with exp:
             assert exp.session is not None
-            console.print(
+            out.print(
                 f"session [bold]{exp.session.session_id}[/] ({exp.session.origin})"
-                " — press Ctrl-C to stop"
+                + (f" → {exp.session_dir}" if exp.session_dir else "")
+                + " — press Ctrl-C to stop"
             )
             import threading
 
@@ -215,7 +341,7 @@ def run(
 
             def _report() -> None:
                 while not stop_report.wait(report_every):
-                    _print_rates(exp)
+                    _print_rates(exp, out)
 
             if report_every > 0:
                 threading.Thread(target=_report, name="cli-report", daemon=True).start()
@@ -223,14 +349,14 @@ def run(
                 exp.run()
             finally:
                 stop_report.set()
-            _print_rates(exp)
+            _print_rates(exp, out)
             if json_summary:
-                console.print_json(json.dumps(exp.summary(), default=str))
+                print(json.dumps(exp.summary(), default=str, indent=2))
     except AriaStreamLabError as exc:
         _fail(exc)
 
 
-def _print_rates(exp: Experiment) -> None:
+def _print_rates(exp: Experiment, out: Console = console) -> None:
     parts = []
     for sid, s in sorted(exp.stream_stats().items()):
         rate = "-" if s.effective_rate_hz is None else f"{s.effective_rate_hz:.1f}"
@@ -241,7 +367,7 @@ def _print_rates(exp: Experiment) -> None:
         if s.out_of_order:
             extra += f" ooo={s.out_of_order}"
         parts.append(f"{sid}={s.received} ({rate}{nominal} Hz{extra})")
-    console.print(f"[dim]{time.strftime('%H:%M:%S')}[/] " + "  ".join(parts))
+    out.print(f"[dim]{time.strftime('%H:%M:%S')}[/] " + "  ".join(parts))
 
 
 def main() -> None:

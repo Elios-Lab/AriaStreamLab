@@ -201,7 +201,11 @@ class ReplayConfig(_Strict):
     speed: float = Field(default=1.0, ge=0, description="0 ⇒ as fast as possible")
     start_s: float | None = Field(default=None, ge=0)
     end_s: float | None = Field(default=None, ge=0)
-    backend: Literal["tools", "sdk"] = "tools"
+    backend: Literal["tools", "sdk"] = Field(
+        default="tools",
+        description="tools: projectaria_tools data provider, exact and seekable; "
+        "sdk: the client SDK replay engine, same callbacks and bounded queues as a live device",
+    )
 
 
 class LoggingConfig(_Strict):

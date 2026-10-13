@@ -9,6 +9,10 @@
         exp.subscribe("rgb", lambda s: print(s.data.shape))
         exp.mark("trial_start", {"trial": 1})
         exp.run(duration_s=10)
+
+    replay = Experiment.replay("sessions/20261013T…_mock_experiment_P000", speed=2.0)
+    with replay:
+        replay.run()
 """
 
 from __future__ import annotations
@@ -21,33 +25,35 @@ from pathlib import Path
 from types import FrameType
 from typing import Any
 
-from ariastreamlab.acquisition.base import Source
+from ariastreamlab.acquisition.base import ReplayControl, Source
 from ariastreamlab.acquisition.mock import MockSource
+from ariastreamlab.acquisition.replay import make_replay_source
 from ariastreamlab.config.loader import load_config, load_preset
 from ariastreamlab.config.models import ExperimentConfig
 from ariastreamlab.core.bus import DropPolicy, EventBus, Subscription
-from ariastreamlab.core.errors import AriaStreamLabError, ConfigError
+from ariastreamlab.core.errors import AriaStreamLabError, ConfigError, ReplayError
 from ariastreamlab.core.logging import configure_logging, get_logger
 from ariastreamlab.core.registry import REGISTRY
 from ariastreamlab.core.sample import AnySample, Origin
 from ariastreamlab.events.markers import DeviceTimeEstimator, Event, EventLog
 from ariastreamlab.monitoring.stats import StatsTracker, StreamStats
-from ariastreamlab.storage.session import SessionInfo
+from ariastreamlab.storage.manifest import RawInfo, Status
+from ariastreamlab.storage.session import Session, SessionInfo
 from ariastreamlab.timing.clock import HostClock
 
 SampleCallback = Callable[[AnySample], None]
 
 
 class Experiment:
-    """Owns one session: bus, source, statistics and events.
-
-    Processors, storage and the dashboard plug in here in the next phases.
+    """Owns one session: bus, source, statistics, events and storage (processors: Phase 3).
 
     Args:
         config: Validated configuration.
         mock: Use the synthetic source instead of the glasses.
-        source: Inject any :class:`Source` (tests, replay).
+        source: Inject any :class:`Source` (tests, custom replay).
         duration_s: Default run duration (``None`` ⇒ until stopped).
+        persist: Write a session directory under ``config.storage.root``.
+        source_json: The user's original JSON text, kept as ``experiment.source.json``.
     """
 
     def __init__(
@@ -57,11 +63,17 @@ class Experiment:
         mock: bool = False,
         source: Source | None = None,
         duration_s: float | None = None,
+        persist: bool = True,
+        source_json: str | None = None,
     ) -> None:
         self.config = config
         self.mock = mock
         self._injected_source = source
         self.duration_s = duration_s
+        self.persist = persist
+        self._source_json = source_json
+        self._replay_of: Path | None = None
+        self._replay_opts: dict[str, Any] = {}
         self.clock = HostClock()
         self.bus = EventBus()
         self.stats = StatsTracker(
@@ -70,29 +82,99 @@ class Experiment:
         self.time_estimator = DeviceTimeEstimator()
         self.events = EventLog(self.bus, self.time_estimator, self.clock)
         self.session: SessionInfo | None = None
+        self.store: Session | None = None
         self.source: Source | None = None
         self._tap: Subscription[Any] | None = None
         self._tap_thread: threading.Thread | None = None
         self._subscriptions: list[tuple[Subscription[Any], threading.Thread]] = []
         self._stop = threading.Event()
         self._opened = False
+        self._failed: BaseException | None = None
         self._log = get_logger("ariastreamlab.experiment")
         configure_logging(config.logging.level, json_lines=config.logging.format == "json")
 
     # -- constructors ----------------------------------------------------------------
     @classmethod
     def from_json(
-        cls, path: str | Path, *, mock: bool = False, duration_s: float | None = None
+        cls,
+        path: str | Path,
+        *,
+        mock: bool = False,
+        duration_s: float | None = None,
+        persist: bool = True,
     ) -> Experiment:
         """Load ``path`` and build the experiment."""
-        return cls(load_config(path), mock=mock, duration_s=duration_s)
+        p = Path(path)
+        return cls(
+            load_config(p),
+            mock=mock,
+            duration_s=duration_s,
+            persist=persist,
+            source_json=p.read_text(encoding="utf-8"),
+        )
 
     @classmethod
     def from_preset(
-        cls, name: str, *, mock: bool = True, duration_s: float | None = None
+        cls, name: str, *, mock: bool = True, duration_s: float | None = None, persist: bool = True
     ) -> Experiment:
         """Build from a bundled preset (``"rgb_imu"``…)."""
-        return cls(load_preset(name), mock=mock, duration_s=duration_s)
+        return cls(load_preset(name), mock=mock, duration_s=duration_s, persist=persist)
+
+    @classmethod
+    def replay(
+        cls,
+        path: str | Path,
+        *,
+        config: ExperimentConfig | str | Path | None = None,
+        speed: float | None = None,
+        start_s: float | None = None,
+        end_s: float | None = None,
+        backend: str | None = None,
+        streams: list[str] | None = None,
+        duration_s: float | None = None,
+        persist: bool = True,
+    ) -> Experiment:
+        """Replay a recorded session directory or a ``.vrs`` file.
+
+        Without ``config`` a session directory replays with its own frozen ``experiment.json``
+        (same processors, same settings); a bare VRS file uses the ``full_capture`` preset.
+        """
+        p = Path(path)
+        explicit_config = True
+        if config is None:
+            frozen = p / "experiment.json"
+            if frozen.exists():
+                cfg = load_config(frozen)
+            else:
+                cfg = load_preset("full_capture")
+                explicit_config = False  # a bare file: replay everything it contains
+        elif isinstance(config, ExperimentConfig):
+            cfg = config
+        else:
+            cfg = load_config(config)
+        if streams is None and explicit_config:
+            # the configuration says which streams the experiment uses; everything else
+            # in the recording stays untouched (same rule as a live run)
+            streams = list(cfg.enabled_streams())
+        rp = cfg.replay
+        speed = rp.speed if speed is None else speed
+        start_s = rp.start_s if start_s is None else start_s
+        end_s = rp.end_s if end_s is None else end_s
+        backend = rp.backend if backend is None else backend
+        if speed == 0 and duration_s is not None and end_s is None:
+            # max speed: "duration" can only mean recorded time, so make it the window end
+            end_s = (start_s or 0.0) + duration_s
+            duration_s = None
+        exp = cls(cfg, duration_s=duration_s, persist=persist)
+        exp._replay_of = p
+        exp._replay_opts = {
+            "speed": speed,
+            "start_s": start_s,
+            "end_s": end_s,
+            "backend": backend,
+            "streams": streams,
+        }
+        return exp
 
     # -- lifecycle --------------------------------------------------------------------
     def open(self) -> Experiment:
@@ -100,13 +182,32 @@ class Experiment:
         if self._opened:
             return self
         origin: Origin = "mock" if self.mock else "live"
-        if self._injected_source is not None:
+        if self._replay_of is not None:
+            origin = "replay"
+        elif self._injected_source is not None:
             origin = self._injected_source.capabilities.origin
         self.session = SessionInfo.create(
             self.config.experiment.name, self.config.experiment.participant, origin
         )
         self.source = self._build_source()
         self._start_tap()
+        raw_to_file: list[str] = []
+        raw = RawInfo()
+        if origin == "mock":
+            raw = RawInfo(kind="mock_files" if self.config.storage.save_mock_raw else "none")
+            if self.config.storage.save_mock_raw:
+                raw_to_file = list(self.source.capabilities.streams)
+        elif origin == "replay":
+            raw = RawInfo(kind="replay_of", source=str(self._replay_of))
+        self.store = Session(
+            self.session,
+            self.config,
+            root=self.config.storage.root if self.persist else None,
+            source_json=self._source_json,
+        )
+        self.store.open(self.bus, raw_streams_to_file=raw_to_file, raw=raw)
+        if origin == "replay" and self.store.layout is not None:
+            self.store.layout.raw_source.write_text(f"{self._replay_of}\n", encoding="utf-8")
         self.events.add(
             Event(
                 "session",
@@ -126,7 +227,8 @@ class Experiment:
             "session.open",
             session_id=self.session.session_id,
             origin=origin,
-            streams=list(self.config.enabled_streams()),
+            streams=list(self.source.capabilities.streams),
+            directory=None if self.store.layout is None else str(self.store.layout.root),
         )
         return self
 
@@ -134,6 +236,16 @@ class Experiment:
         assert self.session is not None
         if self._injected_source is not None:
             return self._injected_source
+        if self._replay_of is not None:
+            opts = self._replay_opts
+            try:
+                return make_replay_source(
+                    self._replay_of, session_id=self.session.session_id, clock=self.clock, **opts
+                )
+            except ReplayError:
+                raise
+            except Exception as exc:
+                raise ReplayError(f"cannot replay {self._replay_of}: {exc}") from exc
         if self.mock:
             return MockSource(
                 self.config.enabled_streams(),
@@ -168,13 +280,20 @@ class Experiment:
         try:
             self.source.start(self.bus)
             self.events.mark("acquisition_start", kind="session")
-            deadline = None if duration is None else time.monotonic() + duration
+            # An unpaced source (max-speed replay, non-realtime mock) interprets ``duration``
+            # as *data* time and finishes on its own; a host deadline would cut it short on a
+            # slow machine.
+            paced = self.source.capabilities.is_paced
+            deadline = None if duration is None or not paced else time.monotonic() + duration
             while not self._stop.is_set():
                 if self.source.finished.is_set():
                     break
                 if deadline is not None and time.monotonic() >= deadline:
                     break
                 self._stop.wait(0.1)
+        except BaseException as exc:
+            self._failed = exc
+            raise
         finally:
             self.events.mark("acquisition_stop", kind="session")
             self.source.stop()
@@ -185,10 +304,10 @@ class Experiment:
         """Ask :meth:`run` to return (thread-safe)."""
         self._stop.set()
 
-    def close(self) -> None:
-        """Stop everything and release the bus. Idempotent."""
+    def close(self) -> Path | None:
+        """Stop everything, finalise the session directory, release the bus. Idempotent."""
         if not self._opened:
-            return
+            return None
         self._stop.set()
         if self.source is not None:
             self.source.stop()
@@ -199,15 +318,30 @@ class Experiment:
         if self._tap is not None:
             self._tap.close()
         if self._tap_thread is not None:
-            self._tap_thread.join(timeout=2)
+            self._tap_thread.join(timeout=5)
+        root: Path | None = None
+        if self.store is not None:
+            status: Status = "crashed" if self._failed is not None else "completed"
+            root = self.store.finalize(
+                status=status,
+                events=self.events,
+                stream_stats=self.stream_stats(),
+                ended_utc_ns=time.time_ns(),
+                extra=self._manifest_extra(),
+            )
         self.bus.close()
         self._log.info("session.close", **{k: v.received for k, v in self.stream_stats().items()})
         self._opened = False
+        return root
 
     def __enter__(self) -> Experiment:
         return self.open()
 
-    def __exit__(self, *exc: object) -> None:
+    def __exit__(
+        self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: object
+    ) -> None:
+        if exc is not None and self._failed is None:
+            self._failed = exc
         self.close()
 
     # -- user-facing operations ----------------------------------------------------------
@@ -250,6 +384,19 @@ class Experiment:
         """Add a timestamped annotation (same time base as the sensor streams)."""
         return self.events.mark(name, payload)
 
+    @property
+    def replay_control(self) -> ReplayControl | None:
+        """Pause/seek/speed controls when the source is a replay, else ``None``."""
+        src = self.source
+        if src is not None and src.capabilities.supports_replay_control:
+            return src  # type: ignore[return-value]
+        return None
+
+    @property
+    def session_dir(self) -> Path | None:
+        """The session directory being written (``None`` without persistence)."""
+        return None if self.store is None or self.store.layout is None else self.store.layout.root
+
     def stream_stats(self) -> dict[str, StreamStats]:
         """Per-stream rates and drop counters."""
         return self.stats.snapshot_all()
@@ -261,10 +408,15 @@ class Experiment:
         return {
             "session_id": self.session.session_id,
             "origin": self.session.origin,
+            "directory": None if self.session_dir is None else str(self.session_dir),
             "streams": self.stats.as_dict(),
             "source": None
             if src is None
-            else {"received": dict(src.received), "dropped": dict(src.source_dropped)},
+            else {
+                "received": dict(src.received),
+                "dropped": dict(src.source_dropped),
+                **dict(src.extra),
+            },
             "bus": {
                 s.name: {
                     "enqueued": s.enqueued,
@@ -275,9 +427,35 @@ class Experiment:
                 for s in self.bus.stats().subscriptions
             },
             "events": len(self.events),
+            "recorder": None
+            if self.store is None or self.store.recorder is None
+            else {k: v.__dict__ for k, v in self.store.recorder.stats().items()},
         }
 
     # -- internals ---------------------------------------------------------------------
+    def _manifest_extra(self) -> dict[str, Any]:
+        extra: dict[str, Any] = {}
+        src = self.source
+        if src is not None:
+            st = src.stats()
+            extra["source"] = {
+                "received": dict(st.received),
+                "dropped": dict(st.source_dropped),
+                **{
+                    k: v
+                    for k, v in st.extra.items()
+                    if isinstance(v, (int, float, str, bool, type(None)))
+                },
+            }
+            calib = getattr(src, "calibration", None)
+            if isinstance(calib, dict) and self.store is not None and self.store.layout is not None:
+                self.store.layout.write_json(
+                    self.store.layout.calibration / "device_calibration.json", calib
+                )
+        if self.session is not None and self.session.origin == "replay" and src is not None:
+            extra["device"] = {"serial": getattr(src, "device_id", None)}
+        return extra
+
     def _start_tap(self) -> None:
         self._tap = self.bus.subscribe(
             "raw.*", maxsize=65_536, policy=DropPolicy.DROP_OLDEST, name="stats-tap"
@@ -293,6 +471,9 @@ class Experiment:
                 if item is not None:
                     self.stats.observe(item)
                     self.time_estimator.observe(item)
+                    for extra in self._tap.drain():
+                        self.stats.observe(extra)
+                        self.time_estimator.observe(extra)
                 for d in derived.drain():
                     self.stats.observe(d)
             derived.close()

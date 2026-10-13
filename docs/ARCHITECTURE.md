@@ -571,6 +571,26 @@ sessions/20261010T143012Z_first_capture_P001/
 
 Every Parquet file carries the `device_timestamp_ns` (int64) and `host_timestamp_ns` columns first. Writers flush row groups every `chunk_seconds` or N rows and rotate files, so a crash loses at most one row group; `inspect` repairs truncated last files by re‑reading footers and rewriting `timeline.parquet`.
 
+### 6.1 As implemented (Phase 2)
+
+* **Mock sessions** store their synthetic samples under `raw_mock/<stream>/` (never under `raw/`, which is reserved for files the device produced; `SessionLayout.guard_raw_write` raises `InvariantError` for anything else). `storage.save_mock_raw: false` turns this off.
+* **Replay sessions** write `raw/SOURCE` (the path of the replayed session or VRS) and record `raw.kind = "replay_of"` in the manifest; the source is never touched.
+* **Chunk files**: every stream directory holds `part-NNNNN.parquet` (tabular payloads: IMU, magnetometer, barometer, gaze, pose, hands, audio, scalars, GPS, dicts) with rows **sorted by device timestamp inside each chunk** (the bus delivers out‑of‑order samples; the reader re‑merges chunks with a heap). Images go to `frame-NNNNNNN.png|jpg` + `frames-NNNNN.parquet` index (`storage.image_format: png|jpeg`) or to `video-NNNNN.mp4` segments + the same index (`image_format: mp4`); a resolution change opens a new segment. Each file is written to `*.tmp` and renamed, so a crash leaves either a complete file or no file; `_meta.json` (payload kind, units, counts) is written on close and reconstructed by `inspect --repair` when missing.
+* **Sequence numbers** of derived samples are `-1` (they are not a transport sequence); `host_timestamp_ns` of a derived row is the processing end time.
+* **Timeline** (`indexes/timeline.parquet`: stream, device ts, host ts, seq, file, row) is built from the chunk files at `finalize` and rebuilt by `inspect --repair`; unreadable chunks are skipped and reported.
+* **Manifest** gains `software` (package, Python, platform, SDK/tools versions, git commit when available), `config_sha256`, per‑stream `received / dropped / effective_rate_hz`, `device` (serial, model, firmware when known) and `warnings`; `status` goes `running → completed | crashed` and `inspect` turns a stale `running` into `crashed` on `--repair`.
+* **Reader** (`storage.reader.SessionReader`) yields `Sample` / `DerivedSample` objects with `provenance.origin = "replay"`, optionally windowed by device time and merged across streams, loading images lazily.
+
+### 6.2 Replay backends
+
+| Backend | Input | Exactness | Pacing / seek | Notes |
+|---|---|---|---|---|
+| `session` | session directory (`raw_mock/` or `derived/`) | exact (every stored row) | `PacedReplay`: speed (0 = max), pause/resume, seek, window | used for mock sessions and for re‑processing derived data |
+| `tools` (default) | `.vrs` file, or a session with `raw/*.vrs` | exact (`projectaria_tools` data provider, every record) | same `PacedReplay` engine; seek re‑opens the iterator at the target time | calibration published first as a `device_calibration` sample; RGB/SLAM decoded from H.265 by the provider |
+| `sdk` | `.vrs` file | **"as live"**: the SDK's own replay engine dispatches through bounded per‑stream queues and occasionally drops a few samples at unbounded speed (its log: `eye-gaze … Enqueued: 623, Processed: 616, Dropped: 7`); also `is_finished()` fires while queues still drain, so the adapter waits for the callbacks to go quiet | SDK speed multiplier and time window only; no pause/seek | exercises exactly the callback path of a live device, which is what makes it valuable for testing the adapter |
+
+The same `Experiment` drives all three, and processors see only `Sample` objects, so the live‑vs‑replay invariant holds by construction (tested in `tests/unit/test_replay.py` and `tests/integration/test_vrs_replay.py`).
+
 ---
 
 ## 7. Concurrency model
@@ -669,12 +689,12 @@ Phase 0 is new; it exists because A‑1/A‑2/A‑3 decide the shape of the unte
 
 | Phase | State | Notes |
 |---|---|---|
-| 0 — repo + hardware probe | **done** | `pyproject.toml` (hatchling, ruff, mypy strict, import‑linter, pytest), CI matrix (Ubuntu/macOS × 3.10–3.12), `scripts/probe_sdk.py` (raw SDK, answers A‑1…A‑8; smoke‑tested against SDK 2.5.1 without hardware). **Waiting for a run on the Mac with the glasses.** |
+| 0 — repo + hardware probe | **done** | `pyproject.toml` (hatchling, ruff, mypy strict, import‑linter, pytest), CI matrix (Ubuntu/macOS × 3.10–3.12), `scripts/probe_sdk.py` (raw SDK, answers A‑1…A‑8; seven runs on the glasses, §0.7–0.11). |
 | 1 — config, core, timing, mock, bus | **done** | `config/` (Pydantic v2, presets with `extends`, JSON Schema, student‑readable errors), `core/` (Sample/DerivedSample, payloads, registry, EventBus with 4 drop policies, errors, logging), `timing/` (ClockAnchor, exact ns conversions, TimeSeriesBuffer + interpolation + temporal_join), `acquisition/base.py` (Source, DeviceManager, state machine) + `acquisition/mock.py`, `monitoring/stats.py` (rates, out‑of‑order, seq‑gap transport drops with late‑fill), `events/markers.py` (markers with estimated device time), `api.Experiment`, CLI `streams / presets / schema / inspect-config / run --mock`. 71 unit/invariant tests, ruff + mypy strict + import contracts clean. |
-| 2 — storage + replay | next | needs a Gen 2 VRS for the replay backend tests (probe output or Meta sample data) |
-| 3 — processing graph | pending | |
-| 4 — Aria Gen 2 adapter | pending | blocked on probe report for A‑1/A‑2/A‑3 |
+| 2 — storage + replay | **done** | `storage/` (layout with raw‑dir guard, frozen config, manifest with provenance, Parquet/image/video chunk writers with atomic rename, `DerivedRecorder` single writer thread, events store, timeline index, `SessionReader`, `inspect`/`--repair`), `acquisition/replay.py` (`PacedReplay` engine: speed/pause/seek/window; `SessionReplaySource`), `acquisition/aria_gen2/{convert,callbacks,vrs_replay}.py` (SDK→payload conversion shared with the live adapter, `CallbackBinder`, `VrsReplaySource` on projectaria_tools, `SdkReplaySource` on the SDK engine), `Experiment.replay()`, CLI `replay` / `inspect` / `run --no-storage`. 102 tests without the SDK, +4 integration tests against a 20 s Gen 2 recording (`tests/data/aria_gen2_sample.vrs`, not committed) in the SDK environment. §6.1–6.2 list the deviations. |
+| 3 — processing graph | next | |
+| 4 — Aria Gen 2 adapter | pending | all assumptions verified (§0.6–0.11); conversion and callback binding already exist from Phase 2 |
 | 5 — dashboard (NiceGUI) | pending | |
 | 6 — polish | pending | |
 
-Deviations from the proposal so far: `logging.json` became `logging.format: "text" | "json"` (``json`` shadows a Pydantic method); `SessionInfo` lives in `storage/session.py` rather than `core/` because it depends on `timing` (layer rule); `InvariantViolation` is named `InvariantError`.
+Deviations from the proposal so far: `logging.json` became `logging.format: "text" | "json"` (``json`` shadows a Pydantic method); `SessionInfo` lives in `storage/session.py` rather than `core/` because it depends on `timing` (layer rule); `InvariantViolation` is named `InvariantError`. Phase 2 added: the layer order is now `cli → api → dashboard → acquisition | processing → storage → events → monitoring → config → timing → core` (replay sources read sessions, so `acquisition` sits above `storage`); the SDK‑isolation contract checks *direct* imports only, since the replay factory legitimately reaches the adapter's VRS backend; `Experiment.replay(config=…)` replays only the streams the configuration enables (a bare VRS without a config replays everything); at speed 0 a `duration` is recorded time (a window end) rather than host time, and an unpaced source (non‑realtime mock, max‑speed replay) is never cut by the host deadline; the registry's audio `nominal_rate_hz` is the chunk rate (50 Hz) so rate displays make sense.
