@@ -332,8 +332,10 @@ class MockSource(Source):
             -0.1 + 0.15 * math.sin(2 * math.pi * 0.11 * t + 1.0) + float(self._rng.normal(0, 0.005))
         )
         depth = 1.0 + 0.5 * (1 + math.sin(2 * math.pi * 0.05 * t))
+        # a 150 ms "blink" (invalid gaze) every 3.7 s, so gaze-validity logic can be exercised
+        valid = (t % 3.7) >= 0.15
         return GazePayload(
-            yaw, pitch, depth, True, yaw - 0.02, yaw + 0.02, pitch - 0.02, pitch + 0.02
+            yaw, pitch, depth, valid, yaw - 0.02, yaw + 0.02, pitch - 0.02, pitch + 0.02
         )
 
     def _pose(self, t: float, *, high_freq: bool) -> PosePayload:

@@ -1,1 +1,1 @@
-"""Built-in processors (Phase 3)."""
+"""Built-in processors (see :data:`ariastreamlab.processing.plugins.BUILTINS`)."""

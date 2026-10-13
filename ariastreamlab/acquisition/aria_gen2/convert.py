@@ -246,30 +246,62 @@ def gps_to_payload(g: Any) -> GpsPayload:
 
 
 def calibration_to_dict(calib: Any) -> dict[str, Any]:
-    """``DeviceCalibration`` → JSON-able summary (per-camera intrinsics + labels)."""
-    out: dict[str, Any] = {"labels": list(calib.get_all_labels()), "cameras": {}}
+    """``DeviceCalibration`` → JSON-able summary.
+
+    Per camera: image size, focal lengths, principal point, model name, the full projection
+    parameter vector (Fisheye624: ``f, cx, cy, k0..k5, p0, p1, s0..s3``), valid radius and
+    ``T_device_camera``; plus ``T_device_cpf`` (central pupil frame, the frame eye gaze is
+    expressed in) and IMU extrinsics. Everything a processor needs to project gaze or
+    transform IMU data without importing the SDK (see ``processing.builtin.gaze``).
+    """
+    out: dict[str, Any] = {"labels": list(calib.get_all_labels()), "cameras": {}, "imus": {}}
     try:
         out["device_subtype"] = str(calib.get_device_subtype())
         out["origin_label"] = str(calib.get_origin_label())
     except Exception:
         pass
+    try:
+        out["transform_device_cpf"] = _matrix(calib.get_transform_device_cpf())
+    except Exception:
+        out["transform_device_cpf"] = None
     for label in calib.get_camera_labels():
         cam = calib.get_camera_calib(label)
         if cam is None:
             continue
         try:
+            params = (
+                cam.get_projection_params()
+                if hasattr(cam, "get_projection_params")
+                else cam.projection_params()
+            )
             out["cameras"][label] = {
                 "image_size": [int(x) for x in cam.get_image_size()],
                 "focal_lengths": [float(x) for x in cam.get_focal_lengths()],
                 "principal_point": [float(x) for x in cam.get_principal_point()],
                 "model": str(cam.get_model_name()) if hasattr(cam, "get_model_name") else None,
-                "projection_params": [float(x) for x in cam.projection_params()]
-                if hasattr(cam, "projection_params")
+                "projection_params": [float(x) for x in params],
+                "valid_radius": float(cam.get_valid_radius())
+                if hasattr(cam, "get_valid_radius")
                 else None,
-                "transform_device_camera": np.asarray(
-                    cam.get_transform_device_camera().to_matrix(), dtype=float
-                ).tolist(),
+                "max_solid_angle_rad": float(cam.get_max_solid_angle())
+                if hasattr(cam, "get_max_solid_angle")
+                else None,
+                "transform_device_camera": _matrix(cam.get_transform_device_camera()),
             }
         except Exception as exc:
             out["cameras"][label] = {"error": str(exc)}
+    for label in getattr(calib, "get_imu_labels", list)():
+        try:
+            imu = calib.get_imu_calib(label)
+            if imu is not None:
+                out["imus"][label] = {
+                    "transform_device_imu": _matrix(imu.get_transform_device_imu())
+                }
+        except Exception as exc:
+            out["imus"][label] = {"error": str(exc)}
     return out
+
+
+def _matrix(se3: Any) -> list[list[float]]:
+    m = np.asarray(se3.to_matrix(), dtype=float)
+    return [[float(x) for x in row] for row in m.tolist()]

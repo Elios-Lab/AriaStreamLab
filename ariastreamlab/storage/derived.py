@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -68,6 +68,7 @@ class DerivedRecorder:
         raw_streams: Iterable[str] = (),
         nominal_rates: dict[str, float | None] | None = None,
         queue_size: int = 512,
+        stream_info: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> None:
         self._bus = bus
         self._layout = layout
@@ -75,6 +76,7 @@ class DerivedRecorder:
         self._derived = set(derived_streams)
         self._raw = set(raw_streams)
         self._rates = dict(nominal_rates or {})
+        self._info = {k: dict(v) for k, v in (stream_info or {}).items()}
         self._writers: dict[str, StreamWriter] = {}
         self._kinds: dict[str, str] = {}
         self._subs: list[Subscription[Any]] = []
@@ -126,7 +128,10 @@ class DerivedRecorder:
                         "samples": w.stats.samples,
                         "chunks": w.stats.chunks,
                         "bytes": w.stats.bytes_written,
-                        "units": dict(REGISTRY.get(sid).units) if sid in REGISTRY else {},
+                        "units": dict(REGISTRY.get(sid).units)
+                        if sid in REGISTRY
+                        else dict(self._info.get(sid, {}).get("units") or {}),
+                        "producer": self._info.get(sid),
                     },
                 )
             except Exception as exc:
@@ -158,7 +163,13 @@ class DerivedRecorder:
         while True:
             got = False
             for sub in self._subs:
-                item = sub.get(timeout=0.05)
+                for item in sub.drain():
+                    got = True
+                    self._handle(item)
+            if not got and self._subs:
+                # idle: block briefly on one queue instead of spinning (the others are
+                # drained on the next pass; a 10 ms wake-up is invisible at our rates)
+                item = self._subs[0].get(timeout=0.01)
                 if item is not None:
                     got = True
                     self._handle(item)

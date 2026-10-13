@@ -182,3 +182,73 @@ def test_sdk_backend_matches_tools_backend(expected_counts: dict[str, int]) -> N
         assert expected_counts[sid] - 20 <= counts[sid] <= expected_counts[sid], sid
     assert counts["device_calibration"] == 1
     assert src.stats().extra["callback_errors"] == {}
+
+
+def test_gaze_projection_matches_projectaria_tools() -> None:
+    """Our NumPy Fisheye624 + CPF chain against the SDK's own camera model."""
+    from projectaria_tools.core import mps
+
+    from ariastreamlab.acquisition.aria_gen2 import convert as cv
+    from ariastreamlab.acquisition.aria_gen2 import vrs_replay
+    from ariastreamlab.processing.builtin.gaze import fisheye624_project, gaze_point_cpf
+
+    provider = vrs_replay.open_provider(VRS)
+    calib = provider.get_device_calibration()
+    d = cv.calibration_to_dict(calib)
+    assert d["transform_device_cpf"] is not None and "camera-rgb" in d["cameras"]
+    cam = calib.get_camera_calib("camera-rgb")
+    params = np.asarray(d["cameras"]["camera-rgb"]["projection_params"])
+    t_cam_cpf = np.linalg.inv(
+        np.asarray(d["cameras"]["camera-rgb"]["transform_device_camera"])
+    ) @ np.asarray(d["transform_device_cpf"])
+    rng = np.random.default_rng(0)
+    for _ in range(50):
+        yaw, pitch, depth = rng.uniform(-0.5, 0.5), rng.uniform(-0.4, 0.4), rng.uniform(0.3, 5)
+        p_cpf = gaze_point_cpf(yaw, pitch, depth)
+        ref_cpf = np.asarray(mps.get_eyegaze_point_at_depth(yaw, pitch, depth))
+        assert np.allclose(p_cpf, ref_cpf, atol=1e-9)
+        p_cam = (t_cam_cpf @ np.append(p_cpf, 1.0))[:3]
+        ref_cam = (
+            cam.get_transform_device_camera().inverse() @ calib.get_transform_device_cpf()
+        ) @ ref_cpf
+        assert np.allclose(p_cam, np.asarray(ref_cam).ravel(), atol=1e-9)
+        ours = fisheye624_project(p_cam, params)
+        ref = cam.project_no_checks(p_cam)
+        assert ours is not None and np.allclose(ours, ref, atol=1e-6)
+
+
+@pytest.mark.slow
+def test_gaze_on_rgb_processor_over_a_real_recording(tmp_path: Path) -> None:
+    from ariastreamlab.config import load_dict
+    from ariastreamlab.storage.reader import SessionReader
+
+    cfg = load_dict(
+        {
+            "experiment": {"name": "gaze", "participant": "P"},
+            "streams": {"rgb": {"fps": 10}, "eye_gaze": {}},
+            "processors": [
+                {
+                    "id": "g",
+                    "type": "gaze.project_to_rgb",
+                    "inputs": ["rgb", "eye_gaze"],
+                    "outputs": ["gaze_rgb"],
+                    "execution": {"join": "nearest", "tolerance_ms": 40},
+                }
+            ],
+            "storage": {"root": str(tmp_path / "s")},
+        }
+    )
+    rep = Experiment.replay(VRS, config=cfg, speed=0.0, start_s=2.0, end_s=6.0)
+    with rep:
+        rep.run()
+        st = rep.processor_stats()["g"]
+        root = rep.session_dir
+    assert st.errors == 0 and st.fired >= 15  # the sample recording has RGB at 5 fps
+    assert root is not None
+    rows = list(SessionReader(root).iter_stream("gaze_rgb"))
+    assert len(rows) == st.outputs
+    inside = [r for r in rows if r.data["in_image"]]
+    assert len(inside) >= len(rows) // 2
+    r = inside[0]
+    assert 0 <= r.data["x"] < 2560 and 0 <= r.data["y"] < 1920
+    assert abs(r.data["gaze_dt_ns"]) <= 40_000_000

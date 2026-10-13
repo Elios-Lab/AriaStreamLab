@@ -1,0 +1,27 @@
+{
+  "extends": "preset:base",
+  "experiment": { "name": "custom_processor_demo", "participant": "P000",
+                  "description": "A student-written processor loaded from processors/ next to this file" },
+  "streams": {
+    "eye_gaze": { "enabled": true },
+    "imu": { "enabled": true }
+  },
+  "processors": [
+    {
+      "id": "blinks",
+      "type": "blink_counter.py",
+      "inputs": ["eye_gaze"],
+      "outputs": ["blinks"],
+      "parameters": { "min_ms": 50, "max_ms": 400 }
+    },
+    {
+      "id": "motion",
+      "type": "imu.motion_detector",
+      "inputs": ["imu_left"],
+      "outputs": ["head_motion"],
+      "parameters": { "threshold": 0.15, "emit": "changes" }
+    }
+  ],
+  "dashboard": { "show": ["eye_gaze", "blinks", "head_motion"] },
+  "mock": { "seed": 7 }
+}

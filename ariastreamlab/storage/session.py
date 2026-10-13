@@ -110,8 +110,15 @@ class Session:
         *,
         raw_streams_to_file: list[str] | None = None,
         raw: RawInfo | None = None,
+        processors: list[dict[str, Any]] | None = None,
+        derived_info: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> None:
-        """Create the directory, freeze the config, start the derived recorder."""
+        """Create the directory, freeze the config, start the derived recorder.
+
+        ``processors`` (resolved descriptions: class, version, validated parameters) replaces
+        the bare configuration entries in the manifest; ``derived_info`` is stored in every
+        derived stream's ``_meta.json`` under ``producer``.
+        """
         if self.layout is None:
             return
         self.layout.create()
@@ -132,7 +139,9 @@ class Session:
             software=SoftwareInfo.collect(),
             raw=raw or RawInfo(),
             enabled_streams=list(self.config.enabled_streams()),
-            processors=[p.model_dump(mode="json") for p in self.config.processors if p.enabled],
+            processors=processors
+            if processors is not None
+            else [p.model_dump(mode="json") for p in self.config.processors if p.enabled],
         )
         self.manifest.write(self.layout.manifest)
         self._attach_log_file()
@@ -148,6 +157,7 @@ class Session:
             nominal_rates={
                 sid: REGISTRY.get(sid).nominal_rate_hz for sid in self.config.enabled_streams()
             },
+            stream_info=derived_info,
         )
         self.recorder.start()
         log.info("session.directory", path=str(self.layout.root))

@@ -161,3 +161,45 @@ def test_cli_run_replay_inspect_roundtrip(tmp_path: Path) -> None:
     assert r.exit_code == 2 and "manifest.json" in r.output
     r = runner.invoke(app, ["replay", str(tmp_path / "missing")])
     assert r.exit_code == 2
+
+
+def test_cli_processors_and_parameter_validation(tmp_path: Path) -> None:
+    r = runner.invoke(app, ["processors"])
+    assert (
+        r.exit_code == 0 and "imu.motion_detector" in r.stdout and "gaze.project_to_rgb" in r.stdout
+    )
+    demo = EXAMPLES / "custom_processor" / "experiment.json"
+    r = runner.invoke(app, ["processors", "--config", str(demo)])
+    assert r.exit_code == 0 and "blink_counter.py:BlinkCounter" in r.stdout
+    r = runner.invoke(app, ["inspect-config", str(demo)])
+    assert r.exit_code == 0 and "blinks" in r.stdout
+    bad = tmp_path / "bad.json"
+    bad.write_text(
+        json.dumps(
+            {
+                "experiment": {"name": "x"},
+                "streams": {"rgb": {}},
+                "processors": [
+                    {
+                        "id": "r",
+                        "type": "image.resize",
+                        "inputs": ["rgb"],
+                        "outputs": ["s"],
+                        "parameters": {"scale": 3},
+                    }
+                ],
+            }
+        )
+    )
+    r = runner.invoke(app, ["inspect-config", str(bad)])
+    assert r.exit_code != 0
+    flat = r.output.replace("\n", "")
+    assert "processors[r].parameters" in flat and "scale" in flat and "accepted parameters" in flat
+    # the demo runs end to end with the mock (blinks every 3.7 s ⇒ one in 4 s)
+    r = runner.invoke(
+        app, ["run", str(demo), "--mock", "--duration", "4", "--no-storage", "--json"]
+    )
+    assert r.exit_code == 0, r.output
+    summary = json.loads(r.stdout[r.stdout.index("{") :])
+    assert summary["processors"]["blinks"]["errors"] == 0
+    assert summary["processors"]["blinks"]["outputs"] >= 1

@@ -120,6 +120,9 @@ class Manifest(BaseModel):
     enabled_streams: list[str] = Field(default_factory=list)
     streams: dict[str, StreamRecord] = Field(default_factory=dict)
     processors: list[dict[str, Any]] = Field(default_factory=list)
+    pipeline: dict[str, Any] = Field(
+        default_factory=dict, description="per-processor counters and timings at the end"
+    )
     events: int = 0
     warnings: list[str] = Field(default_factory=list)
     quality: dict[str, Any] = Field(default_factory=dict)

@@ -76,6 +76,8 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["D", "ARG", "T20", "SIM117", "E501", "PT018"]
 "scripts/**" = ["T20", "D"]
+"examples/**" = ["D"]
+"ariastreamlab/processing/builtin/**" = ["D106"]  # nested Parameters models
 "ariastreamlab/cli/**" = ["T20"]
 "ariastreamlab/core/registry.py" = ["E501"]
 

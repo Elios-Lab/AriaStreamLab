@@ -152,12 +152,13 @@ class SessionReader:
                 prov,
                 {"label": st.meta.get("label", st.stream_id)},
             )
-        proc = str(st.meta.get("processor_id", "unknown"))
+        producer = st.meta.get("producer") or {}
+        proc = str(producer.get("processor") or st.meta.get("processor_id", "unknown"))
         return DerivedSample(
             device_id,
             st.stream_id,
             int(row["device_timestamp_ns"]),
-            tuple(st.meta.get("source_streams", ())),
+            tuple(producer.get("inputs") or st.meta.get("source_streams", ())),
             (),
             proc,
             int(row["host_timestamp_ns"]),

@@ -101,9 +101,22 @@ def load_dict(
     """Validate an already-parsed dictionary (resolving ``extends``)."""
     resolved = resolve_extends(data, base_dir)
     try:
-        return ExperimentConfig.model_validate(resolved)
+        cfg = ExperimentConfig.model_validate(resolved)
     except ValidationError as exc:
         raise format_validation_error(exc, source) from None
+    return _anchor_processors_path(cfg, base_dir)
+
+
+def _anchor_processors_path(cfg: ExperimentConfig, base_dir: Path | None) -> ExperimentConfig:
+    """Make ``processors_path`` relative to the JSON file; default to ``processors/`` next to it."""
+    pp = cfg.processors_path
+    if pp is not None:
+        if not pp.is_absolute() and base_dir is not None:
+            pp = (base_dir / pp).resolve()
+        return cfg.model_copy(update={"processors_path": pp})
+    if base_dir is not None and (base_dir / "processors").is_dir():
+        return cfg.model_copy(update={"processors_path": (base_dir / "processors").resolve()})
+    return cfg
 
 
 def load_config(path: str | Path) -> ExperimentConfig:

@@ -115,7 +115,13 @@ class StreamConfig(BaseModel):
 class ExecutionConfig(_Strict):
     """How a processor is scheduled."""
 
-    queue_size: int = Field(default=4, ge=1, le=10_000)
+    queue_size: int = Field(
+        default=64,
+        ge=1,
+        le=10_000,
+        description="Samples waiting for the processor before drop_policy applies "
+        "(64 ≈ 80 ms of IMU; use 1–2 with 'latest' for images)",
+    )
     drop_policy: DropPolicy = DropPolicy.DROP_OLDEST
     join: Literal["latest", "nearest", "previous"] = Field(
         default="latest",

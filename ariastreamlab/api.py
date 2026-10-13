@@ -37,6 +37,8 @@ from ariastreamlab.core.registry import REGISTRY
 from ariastreamlab.core.sample import AnySample, Origin
 from ariastreamlab.events.markers import DeviceTimeEstimator, Event, EventLog
 from ariastreamlab.monitoring.stats import StatsTracker, StreamStats
+from ariastreamlab.processing.graph import ProcessingGraph
+from ariastreamlab.processing.runner import ProcessorStats
 from ariastreamlab.storage.manifest import RawInfo, Status
 from ariastreamlab.storage.session import Session, SessionInfo
 from ariastreamlab.timing.clock import HostClock
@@ -45,7 +47,7 @@ SampleCallback = Callable[[AnySample], None]
 
 
 class Experiment:
-    """Owns one session: bus, source, statistics, events and storage (processors: Phase 3).
+    """Owns one session: bus, source, processing graph, statistics, events and storage.
 
     Args:
         config: Validated configuration.
@@ -84,6 +86,7 @@ class Experiment:
         self.session: SessionInfo | None = None
         self.store: Session | None = None
         self.source: Source | None = None
+        self.graph: ProcessingGraph | None = None
         self._tap: Subscription[Any] | None = None
         self._tap_thread: threading.Thread | None = None
         self._subscriptions: list[tuple[Subscription[Any], threading.Thread]] = []
@@ -205,7 +208,27 @@ class Experiment:
             root=self.config.storage.root if self.persist else None,
             source_json=self._source_json,
         )
-        self.store.open(self.bus, raw_streams_to_file=raw_to_file, raw=raw)
+        # the graph is built before the store opens so the manifest and the derived streams'
+        # _meta.json carry the resolved processor classes, versions and parameters
+        self.graph = ProcessingGraph(
+            self.config,
+            self.bus,
+            clock=self.clock,
+            session_dir=None,
+            calibration=self._initial_calibration(),
+            lossless=not self.source.capabilities.is_paced,
+        )
+        self.store.open(
+            self.bus,
+            raw_streams_to_file=raw_to_file,
+            raw=raw,
+            processors=self.graph.describe(),
+            derived_info=self.graph.stream_info(),
+        )
+        if self.store.layout is not None:
+            self.graph.session_dir = self.store.layout.root
+            for w in self.graph.workers.values():
+                w.ctx.session_dir = self.store.layout.root
         if origin == "replay" and self.store.layout is not None:
             self.store.layout.raw_source.write_text(f"{self._replay_of}\n", encoding="utf-8")
         self.events.add(
@@ -278,6 +301,8 @@ class Experiment:
 
             previous_handler = signal.signal(signal.SIGINT, _on_sigint)
         try:
+            if self.graph is not None:
+                self.graph.start()
             self.source.start(self.bus)
             self.events.mark("acquisition_start", kind="session")
             # An unpaced source (max-speed replay, non-realtime mock) interprets ``duration``
@@ -297,6 +322,8 @@ class Experiment:
         finally:
             self.events.mark("acquisition_stop", kind="session")
             self.source.stop()
+            if self.graph is not None:
+                self.graph.stop()  # drains what is queued, in topological order
             if previous_handler is not None:
                 signal.signal(signal.SIGINT, previous_handler)
 
@@ -311,6 +338,8 @@ class Experiment:
         self._stop.set()
         if self.source is not None:
             self.source.stop()
+        if self.graph is not None:
+            self.graph.stop()
         for sub, thread in self._subscriptions:
             sub.close()
             thread.join(timeout=2)
@@ -397,6 +426,10 @@ class Experiment:
         """The session directory being written (``None`` without persistence)."""
         return None if self.store is None or self.store.layout is None else self.store.layout.root
 
+    def processor_stats(self) -> dict[str, ProcessorStats]:
+        """Per-processor counters and timings (empty without processors)."""
+        return {} if self.graph is None else self.graph.stats()
+
     def stream_stats(self) -> dict[str, StreamStats]:
         """Per-stream rates and drop counters."""
         return self.stats.snapshot_all()
@@ -427,6 +460,7 @@ class Experiment:
                 for s in self.bus.stats().subscriptions
             },
             "events": len(self.events),
+            "processors": None if self.graph is None else self.graph.stats_dict(),
             "recorder": None
             if self.store is None or self.store.recorder is None
             else {k: v.__dict__ for k, v in self.store.recorder.stats().items()},
@@ -454,7 +488,14 @@ class Experiment:
                 )
         if self.session is not None and self.session.origin == "replay" and src is not None:
             extra["device"] = {"serial": getattr(src, "device_id", None)}
+        if self.graph is not None and len(self.graph):
+            extra["pipeline"] = self.graph.stats_dict()
         return extra
+
+    def _initial_calibration(self) -> dict[str, Any] | None:
+        """Calibration known before start (VRS replay reads it from the file)."""
+        calib = getattr(self.source, "calibration", None)
+        return calib if isinstance(calib, dict) else None
 
     def _start_tap(self) -> None:
         self._tap = self.bus.subscribe(

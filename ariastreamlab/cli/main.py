@@ -15,14 +15,17 @@ from typing import Annotated
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from ariastreamlab import __version__
 from ariastreamlab.api import Experiment
 from ariastreamlab.config.loader import dump_resolved, load_config, load_preset, preset_names
+from ariastreamlab.config.models import ExperimentConfig
 from ariastreamlab.config.schema import export_json_schema_text
 from ariastreamlab.core.errors import AriaStreamLabError
 from ariastreamlab.core.registry import REGISTRY
+from ariastreamlab.processing import list_processors, validate_processors
 
 app = typer.Typer(
     name="ariastreamlab",
@@ -36,7 +39,7 @@ err_console = Console(stderr=True)
 
 
 def _fail(exc: AriaStreamLabError) -> None:
-    err_console.print(f"[bold red]error:[/] {exc}")
+    err_console.print(f"[bold red]error:[/] {escape(str(exc))}")
     raise typer.Exit(code=2)
 
 
@@ -103,6 +106,45 @@ def presets() -> None:
 
 
 @app.command()
+def processors(
+    config: Annotated[
+        Path | None,
+        typer.Option("--config", "-c", help="Also list processor files next to this experiment"),
+    ] = None,
+) -> None:
+    """List the processors you can use in "processors": [{"type": ...}]."""
+    path = None
+    if config is not None:
+        try:
+            path = _processors_path(load_config(config), config)
+        except AriaStreamLabError as exc:
+            _fail(exc)
+            return
+    table = Table(title="Available processors")
+    for col in ("type", "version", "origin", "parameters", "description"):
+        table.add_column(col)
+    for info in list_processors(path):
+        params = "-"
+        if info.cls.Parameters is not None:
+            params = ", ".join(
+                f"{n}" + ("" if f.is_required() else f"={f.get_default()!r}")
+                for n, f in info.cls.Parameters.model_fields.items()
+            )
+        table.add_row(info.name, info.version, info.origin, params, info.description)
+    console.print(table)
+    console.print(
+        '[dim]custom: "type": "package.module:Class" or "my_file.py:Class"'
+        " (looked up in processors_path, default: processors/ next to the JSON)[/]"
+    )
+
+
+def _processors_path(cfg: ExperimentConfig, config_file: Path | None) -> Path | None:
+    """``processors_path`` as the loader anchored it (absolute, or ``None``)."""
+    del config_file  # kept for call-site readability; the loader already anchored the path
+    return cfg.processors_path
+
+
+@app.command()
 def schema(
     output: Annotated[
         Path | None, typer.Option("--output", "-o", help="Write to this file instead of stdout")
@@ -155,17 +197,27 @@ def inspect_config(
         )
     console.print(table)
     if cfg.processors:
+        # resolve the classes and validate the parameters now, not at run time
+        try:
+            procs = {r.cfg.id: r for r in validate_processors(cfg, _processors_path(cfg, path))}
+        except AriaStreamLabError as exc:
+            _fail(exc)
+            return
         table = Table(title="Processors")
-        for col in ("id", "type", "inputs", "outputs", "policy", "save"):
+        for col in ("id", "type", "version", "inputs", "outputs", "join", "policy", "save"):
             table.add_column(col)
         for p in cfg.processors:
+            r = procs.get(p.id)
             table.add_row(
                 p.id,
                 p.type,
+                "-" if r is None else r.cls.version,
                 ", ".join(p.inputs),
                 ", ".join(p.outputs),
+                f"{p.execution.join}"
+                + (f"/{p.execution.tolerance_ms:g}ms" if len(p.inputs) > 1 else ""),
                 f"{p.execution.drop_policy.value}/{p.execution.queue_size}",
-                "yes" if p.save_output else "no",
+                "yes" if p.save_output else ("off" if not p.enabled else "no"),
             )
         console.print(table)
     conn = cfg.device.connection
@@ -368,6 +420,21 @@ def _print_rates(exp: Experiment, out: Console = console) -> None:
             extra += f" ooo={s.out_of_order}"
         parts.append(f"{sid}={s.received} ({rate}{nominal} Hz{extra})")
     out.print(f"[dim]{time.strftime('%H:%M:%S')}[/] " + "  ".join(parts))
+    procs = exp.processor_stats()
+    if procs:
+        bits = []
+        for pid, p in sorted(procs.items()):
+            ms = "-" if p.exec_ms_mean is None else f"{p.exec_ms_mean:.2f}ms"
+            dropped = sum(p.queue_dropped.values())
+            flag = ""
+            if p.errors:
+                flag += f" [red]err={p.errors}[/]"
+            if dropped:
+                flag += f" drop={dropped}"
+            if p.join_misses:
+                flag += f" miss={p.join_misses}"
+            bits.append(f"{pid}: {p.fired}→{p.outputs} ({ms}{flag})")
+        out.print("[dim]   pipeline[/] " + "  ".join(bits))
 
 
 def main() -> None:
