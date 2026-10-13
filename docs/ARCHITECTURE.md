@@ -146,6 +146,28 @@ Consequences for Phase 4: (1) the adapter builds on `aria.stream_receiver.Stream
 | Threads | confirmed again: baro/mag/ppg/audio callbacks from 10–11 threads, images/IMU/MP from one. |
 | Quality stats | during streaming `expected_frame_count` is 0 for every sensor and `actual_frame_count` counts up; `early/late_time_error_count` appear on MAG (1/1) and VIO‑HF (6/3) → the parser reports actual counts and timestamp errors, and treats `expected == 0` as "unknown", not as 100 % loss. |
 
+### 0.10 Hardware probe findings — run 6 (2026‑10‑13 11:22 UTC): **the untethered flow is verified**
+
+| Step | Result |
+|---|---|
+| Hotspot start | over BLE again (6 s); band came back as 2.4 GHz / 20 MHz (run 5: 5 GHz / 40 MHz) — the firmware alternates, so the adapter always passes `--wifi-band`/`--channel-bandwidth`. |
+| Stream over Wi‑Fi | 20 s, all streams nominal, zero out‑of‑order; source `192.168.37.28`; gaze/hand 21.5 Hz. |
+| **A‑1 control over Wi‑Fi — answered** | port 23456 **is** open on the address the stream comes from (`192.168.37.28`), not on the hotspot gateway. `DeviceClient.connect(DeviceTarget(ip="192.168.37.28"))` + `status()` succeeded while streaming. |
+| **Cable unplugged** | `usb_network_devices()` → `[]`, `charger_connected: false`; the stream kept flowing (**13 575 samples in the 5 s after unplugging**), `status()` over Wi‑Fi still answered, and **`stop_streaming()` over Wi‑Fi returned in 2.4 s**. ⇒ After the one‑time USB pairing, a session can be started with the cable in, then run and stopped fully wireless; combined with BLE hotspot start, the cable is needed only to bootstrap the Wi‑Fi control address. |
+| Thermal | skin temperature 29.1 → 36.5 °C over ~2 min of hotspot streaming (throttle at 42 °C) — the dashboard's temperature read‑out and the 20‑min hotspot advice are not optional. |
+| **A‑4 VRS — still 96 bytes** even after releasing the handler. Runs 4–6 used a bare `StreamDataInterface(True)`; Meta's external `StreamReceiver` constructs it with `enable_image_decoding=False` and decodes in Python. Probe v6 uses `StreamReceiver` itself (the API the adapter will use); if the file is still empty with Meta's own receiver, host‑side VRS is not functional in SDK 2.5.1's external wheel and the raw‑ground‑truth design falls back to **on‑device recording** (`start_recording` → `download_recording`), which the SDK supports, at the cost of no simultaneous live processing — a decision point for you. |
+
+**Untethered sequence as it will be implemented (all steps verified except the VRS file):**
+
+1. one‑time: `aria_gen2 auth pair` over USB, then `auth pair --ble`, `streaming install-certs`;
+2. `device hotspot start --wifi-band BAND_5GHZ --channel-bandwidth BW_40MHZ` (BLE or USB) → SSID/passphrase;
+3. laptop joins the hotspot (manual, or `networksetup -setairportnetwork` when `auto_join`);
+4. `DeviceClient.connect()` over USB → `set_streaming_config(WIFI_SAP, batch_period_ms, cert)` → `start_streaming()`;
+5. the glasses connect to `oatmeal_server.local:6768` over the hotspot; `AriaGen2HttpServer.connections()[0]["client_ip"]` gives the Wi‑Fi control address;
+6. `DeviceClient.connect(DeviceTarget(ip=<that address>))` → from now on status, quality stats and `stop_streaming()` go over Wi‑Fi; the cable can be removed.
+
+Open question for a later probe: whether step 4 also works over the Wi‑Fi address *before* any stream exists (i.e. start without the cable). The address is only learned from an active stream today; it may be stable across sessions (`192.168.37.28` in runs 5 and 6), which would make a fully cable‑free start possible.
+
 ---
 
 ## 1. Architecture

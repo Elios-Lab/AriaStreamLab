@@ -338,6 +338,12 @@ def main() -> int:
     parser.add_argument(
         "--vrs", default="", help="VRS output path (default: ./probe_<utc>.vrs in the current dir)"
     )
+    parser.add_argument(
+        "--raw-interface",
+        action="store_true",
+        help="use a bare StreamDataInterface(True) instead of Meta's StreamReceiver "
+        "(runs 4-6 did this; it decodes nothing and left a 96-byte VRS)",
+    )
     parser.add_argument("--skip-replay", action="store_true")
     parser.add_argument("--out", default="probe_report.json")
     args = parser.parse_args()
@@ -587,21 +593,37 @@ def main() -> int:
     handler_box: dict[str, Any] = {}
     time_sync = sdk.TimeSyncRef()
 
-    s = report.step("SERVER", f"AriaGen2HttpServer on 0.0.0.0:{args.port} with record_to_vrs")
+    receiver_obj: Any = None
+    receiver_kind = "raw StreamDataInterface" if args.raw_interface else "StreamReceiver"
+    s = report.step("SERVER", f"{receiver_kind} on 0.0.0.0:{args.port} with record_to_vrs")
     try:
         server_cfg = sdk.HttpServerConfig()
         server_cfg.address = "0.0.0.0"
         server_cfg.port = args.port
 
-        def factory() -> Any:
-            handler = sdk.StreamDataInterface(True)
-            handler.record_to_vrs(vrs_path)
-            register_all(handler, counter, camera_labels)
-            handler_box["handler"] = handler
-            return handler
+        if args.raw_interface:
 
-        server = sdk.AriaGen2HttpServer(server_cfg, factory, time_sync)
-        report.finish(s, "PASS", vrs_path=vrs_path)
+            def factory() -> Any:
+                handler = sdk.StreamDataInterface(True)
+                handler.record_to_vrs(vrs_path)
+                register_all(handler, counter, camera_labels)
+                handler_box["handler"] = handler
+                return handler
+
+            server = sdk.AriaGen2HttpServer(server_cfg, factory, time_sync)
+        else:
+            # Meta's own high-level receiver: StreamDataInterface(False) for the external wheel,
+            # Python/HW H.265 decoding interposed on image callbacks, VRS recording, and a
+            # teardown that releases the handler (which is what finalises the VRS file).
+            import aria.stream_receiver as stream_receiver
+
+            receiver_obj = stream_receiver.StreamReceiver(enable_image_decoding=True)
+            receiver_obj.set_server_config(server_cfg)
+            receiver_obj.record_to_vrs(vrs_path)
+            register_all(receiver_obj, counter, camera_labels)
+            server = receiver_obj.start_server()
+            time_sync = receiver_obj.get_time_sync() or time_sync
+        report.finish(s, "PASS", vrs_path=vrs_path, receiver=receiver_kind)
     except Exception as exc:
         report.fail(s, exc)
 
@@ -748,13 +770,27 @@ def main() -> int:
         t0 = time.monotonic()
         device.stop_streaming()
         time.sleep(2)
-        if server is not None:
-            handler = handler_box.get("handler")
-            if handler is not None:
-                handler.clear_callbacks()
-            server.stop()
-            server.join()
-        report.finish(s, "PASS", seconds=round(time.monotonic() - t0, 2))
+
+        def _teardown() -> None:
+            if receiver_obj is not None:
+                receiver_obj.stop_server()  # clears callbacks, stops the server, drops the handler
+            elif server is not None:
+                handler = handler_box.get("handler")
+                if handler is not None:
+                    handler.clear_callbacks()
+                server.stop()
+                server.join()
+
+        # server.join() was seen to hang in a sandbox without a device; bound it.
+        th = threading.Thread(target=_teardown, name="probe-teardown", daemon=True)
+        th.start()
+        th.join(30)
+        report.finish(
+            s,
+            "PASS" if not th.is_alive() else "FAIL",
+            seconds=round(time.monotonic() - t0, 2),
+            teardown_completed=not th.is_alive(),
+        )
     except Exception as exc:
         report.fail(s, exc)
 
@@ -762,6 +798,7 @@ def main() -> int:
     # StreamDataInterface is destroyed (Meta's StreamReceiver.stop_server sets it to None).
     handler_box.clear()
     server = None
+    receiver_obj = None
     import gc
 
     gc.collect()
