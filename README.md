@@ -4,10 +4,11 @@ An experiment-oriented Python framework for **Meta Project Aria Gen 2** glasses,
 university students and researchers: one JSON file describes the experiment, one command runs
 it, and the raw VRS recording stays the ground truth while processors produce derived data.
 
-> **Status: Phase 3 (pre-alpha).** Configuration, core data model, timing utilities, event
+> **Status: Phase 4 (pre-alpha).** Configuration, core data model, timing utilities, event
 > bus, synthetic (mock) source, crash-safe session storage, session/VRS replay, the
-> processing graph with plugin processors and the CLI exist and are tested without hardware.
-> The live Aria Gen 2 adapter and the dashboard follow in the next phases — see
+> processing graph with plugin processors, the live Aria Gen 2 adapter and the CLI exist;
+> everything but the live path is tested without hardware, the live path against a fake SDK
+> and with a hardware smoke test. The dashboard follows in Phase 5 — see
 > [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design, the plan and the hardware
 > findings.
 
@@ -44,6 +45,23 @@ ariastreamlab replay recording.vrs --backend sdk                 # Meta's replay
 Processors never learn whether a sample came from the glasses, a mock or a replay — that
 invariant is tested, not promised.
 
+## With the glasses
+
+```bash
+pip install -e ".[dev,aria]"            # adds Meta's client SDK + projectaria_tools
+aria_gen2 auth pair                     # once, over USB; accept in the Companion App
+ariastreamlab doctor --device           # SDK, CLI, pairing, streaming port, disk
+ariastreamlab devices                   # what the laptop can reach
+ariastreamlab run examples/rgb_imu.json --duration 120
+```
+
+`run` connects over the USB link, starts the glasses' hotspot (asks you to join it), streams
+`profile9` to the laptop, records the host-received VRS under `raw/`, runs your processors live,
+and moves control to Wi-Fi as soon as data flows so the cable can be unplugged. Everything it
+does is a `device_state` event in the session. See
+[docs/tutorials/live_session.md](docs/tutorials/live_session.md) for the sequence, the health
+signals and the troubleshooting table.
+
 ## Processing
 
 Processors are declared in the experiment JSON and run on their own threads with bounded
@@ -74,13 +92,13 @@ parameters at any time.
 | `ariastreamlab/config` | Pydantic models, presets (`extends: "preset:rgb_imu"`), JSON Schema |
 | `ariastreamlab/core` | `Sample` / `DerivedSample`, stream registry, event bus, errors |
 | `ariastreamlab/timing` | host clock + UTC anchor, exact ns conversions, temporal lookup/join |
-| `ariastreamlab/acquisition` | `Source` interface, mock source, replay engine (`session`, `tools`, `sdk` backends), SDK→payload conversion and callback binding for the Gen 2 adapter |
+| `ariastreamlab/acquisition` | `Source` interface, mock source, replay engine (`session`, `tools`, `sdk` backends), and `aria_gen2/` — the only package that imports Meta's SDK: live adapter, device manager, CLI wrapper, quality parser, conversions |
 | `ariastreamlab/processing` | `Processor` contract, plugin discovery, per-processor workers (queues, joins, stats), the graph, built-ins |
 | `ariastreamlab/storage` | session layout, manifest, chunked Parquet/image/video writers, reader, timeline index, `inspect`/repair |
 | `ariastreamlab/monitoring` | per-stream rates and drop accounting |
 | `ariastreamlab/cli` | `ariastreamlab doctor \| devices \| streams \| presets \| processors \| schema \| inspect-config \| run \| replay \| inspect` |
 | `scripts/probe_sdk.py` | raw-SDK hardware probe that answers the assumptions in the architecture doc |
-| `docs/` | architecture, `tutorials/custom_processors.md` |
+| `docs/` | architecture, `tutorials/live_session.md`, `tutorials/custom_processors.md` |
 | `examples/` | experiment files, `custom_processor/` (a processor loaded from a file next to the JSON) |
 
 ## Development
@@ -90,6 +108,7 @@ ruff check . && ruff format --check .
 mypy
 lint-imports            # only acquisition/aria_gen2 may import Meta's SDK
 pytest                  # hardware tests are marked and skipped by default
+ARIA_HARDWARE=1 pytest -m hardware -s   # on the paired laptop: 15 s live session + replay
 # tests/integration/test_vrs_replay.py runs only with projectaria_tools and a recording at
 # tests/data/aria_gen2_sample.vrs (see tests/data/README.md)
 ```

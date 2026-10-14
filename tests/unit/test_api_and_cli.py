@@ -54,9 +54,13 @@ def test_experiment_mock_run_subscribe_and_mark() -> None:
     assert names[-1] == "trial_end"
 
 
-def test_experiment_live_not_available_yet() -> None:
+def test_experiment_live_without_sdk_explains(monkeypatch: pytest.MonkeyPatch) -> None:
+    from ariastreamlab.acquisition import aria_gen2
+    from ariastreamlab.core.errors import DeviceError
+
+    monkeypatch.setattr(aria_gen2, "sdk_available", lambda: False)
     exp = Experiment(load_dict(_fast_config()), mock=False)
-    with pytest.raises(ConfigError, match="Phase 4"):
+    with pytest.raises(DeviceError, match="client SDK"):
         exp.open()
 
 
@@ -110,8 +114,8 @@ def test_cli_run_mock(tmp_path: Path) -> None:
     assert r.exit_code == 0, r.output
     assert "imu_left=400" in r.output
     r = runner.invoke(app, ["run", str(cfg), "--duration", "0.1"])
-    assert r.exit_code == 2
-    assert "--mock" in r.output
+    assert r.exit_code == 2  # no SDK here: install hint; with the SDK: no device found
+    assert "--mock" in r.output or "no Aria Gen 2 glasses found" in r.output
 
 
 def test_cli_run_replay_inspect_roundtrip(tmp_path: Path) -> None:

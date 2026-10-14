@@ -95,6 +95,74 @@ def streams(
 
 
 @app.command()
+def doctor(
+    device: Annotated[
+        bool, typer.Option("--device", help="Also talk to the glasses (device list, auth check)")
+    ] = False,
+    port: Annotated[int, typer.Option("--port", help="Streaming server port to check")] = 6768,
+    json_out: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Check this laptop: Python, packages, the SDK, the CLI, the streaming port, disk space."""
+    from ariastreamlab.cli.doctor import run_checks
+
+    checks = run_checks(server_port=port, with_device=device)
+    if json_out:
+        print(json.dumps([c.as_dict() for c in checks], indent=2))
+    else:
+        colours = {"ok": "green", "warn": "yellow", "fail": "red", "skip": "dim"}
+        for c in checks:
+            console.print(f"[{colours[c.status]}]{c.status:4}[/] {c.name}: {escape(c.detail)}")
+    if any(c.status == "fail" for c in checks):
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def devices(
+    ble_scan: Annotated[
+        bool, typer.Option("--ble-scan", help="Scan for paired BLE devices in range (slow)")
+    ] = False,
+) -> None:
+    """List the glasses this laptop can reach (USB network link, configured IP, CLI view)."""
+    from ariastreamlab.acquisition.aria_gen2 import sdk_available
+
+    if not sdk_available():
+        _fail(
+            AriaStreamLabError(
+                "the Project Aria client SDK is not installed",
+                hint="pip install 'ariastreamlab[aria]' on the laptop that talks to the glasses",
+            )
+        )
+        return
+    from ariastreamlab.acquisition.aria_gen2.cli import AriaCli
+    from ariastreamlab.acquisition.aria_gen2.device import AriaGen2DeviceManager
+    from ariastreamlab.config.models import DeviceConfig
+
+    try:
+        mgr = AriaGen2DeviceManager(DeviceConfig())
+        found = mgr.discover()
+    except AriaStreamLabError as exc:
+        _fail(exc)
+        return
+    if found:
+        table = Table(title="Devices (SDK)")
+        for col in ("serial", "transport", "ip"):
+            table.add_column(col)
+        for d in found:
+            table.add_row(d.serial, d.transport, d.ip or "-")
+        console.print(table)
+    else:
+        console.print(
+            "[yellow]no USB network link to a device[/] (cable in? `aria_gen2 auth pair`?)"
+        )
+    try:
+        res = AriaCli().device_list(ble_scan=ble_scan)
+        console.print("[bold]aria_gen2 device list[/]")
+        console.print(escape(res.stdout.strip() or res.stderr.strip() or "(no output)"))
+    except AriaStreamLabError as exc:
+        console.print(f"[yellow]{escape(str(exc))}[/]")
+
+
+@app.command()
 def presets() -> None:
     """List the bundled configuration presets (use with "extends": "preset:<name>")."""
     for name in preset_names():
@@ -221,10 +289,22 @@ def inspect_config(
             )
         console.print(table)
     conn = cfg.device.connection
+    from ariastreamlab.acquisition.aria_gen2.profiles import build_plan
+
+    try:
+        plan = build_plan(cfg, None)
+    except AriaStreamLabError as exc:
+        _fail(exc)
+        return
+    hs = conn.hotspot
+    hotspot = f"start {hs.band}/{hs.bandwidth}" if hs.start else "reuse"
     console.print(
-        f"device: interface={conn.streaming_interface}"
-        f" batch_period_ms={conn.effective_batch_period_ms} profile.mode={cfg.device.profile.mode}"
+        f"device: interface={plan.interface} batch_period_ms={plan.batch_period_ms}"
+        f" profile={plan.profile_name or 'custom JSON'} ({cfg.device.profile.mode})"
+        f" hotspot={hotspot}"
     )
+    for w in plan.warnings:
+        console.print(f"[yellow]live:[/] {escape(w)}")
     console.print(
         f"storage: root={cfg.storage.root} save_raw_vrs={cfg.storage.save_raw_vrs}"
         f" | dashboard: {'on' if cfg.dashboard.enabled else 'off'}"

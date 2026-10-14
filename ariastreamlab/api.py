@@ -25,7 +25,7 @@ from pathlib import Path
 from types import FrameType
 from typing import Any
 
-from ariastreamlab.acquisition.base import ReplayControl, Source
+from ariastreamlab.acquisition.base import DeviceTransition, ReplayControl, Source
 from ariastreamlab.acquisition.mock import MockSource
 from ariastreamlab.acquisition.replay import make_replay_source
 from ariastreamlab.config.loader import load_config, load_preset
@@ -202,6 +202,8 @@ class Experiment:
                 raw_to_file = list(self.source.capabilities.streams)
         elif origin == "replay":
             raw = RawInfo(kind="replay_of", source=str(self._replay_of))
+        elif origin == "live":
+            raw = RawInfo(kind="host_received_vrs" if self.config.storage.save_raw_vrs else "none")
         self.store = Session(
             self.session,
             self.config,
@@ -231,6 +233,10 @@ class Experiment:
                 w.ctx.session_dir = self.store.layout.root
         if origin == "replay" and self.store.layout is not None:
             self.store.layout.raw_source.write_text(f"{self._replay_of}\n", encoding="utf-8")
+        if origin == "live" and self.store.layout is not None and self.config.storage.save_raw_vrs:
+            record_raw_to = getattr(self.source, "record_raw_to", None)
+            if record_raw_to is not None:
+                record_raw_to(self.store.layout.raw)
         self.events.add(
             Event(
                 "session",
@@ -277,9 +283,27 @@ class Experiment:
                 duration_s=self.duration_s,
                 clock=self.clock,
             )
-        raise ConfigError(
-            "live acquisition from Aria Gen 2 glasses is implemented in Phase 4 of the plan",
-            hint="run with mock=True / `--mock` for now (see docs/ARCHITECTURE.md §12)",
+        from ariastreamlab.acquisition.aria_gen2 import make_live_source
+
+        return make_live_source(
+            self.config,
+            session_id=self.session.session_id,
+            clock=self.clock,
+            on_transition=self._on_device_transition,
+        )
+
+    def _on_device_transition(self, t: DeviceTransition) -> None:
+        """Device state changes become ``device_state`` events (stored in events.parquet)."""
+        device_ns, how = self.time_estimator.device_from_host(t.host_timestamp_ns)
+        self.events.add(
+            Event(
+                "device_state",
+                t.current.value,
+                device_ns,
+                t.host_timestamp_ns,
+                {"previous": t.previous.value, "reason": t.reason, "transport": t.transport},
+                how,
+            )
         )
 
     def run(self, duration_s: float | None = None, *, install_signal_handler: bool = True) -> None:
@@ -488,9 +512,37 @@ class Experiment:
                 )
         if self.session is not None and self.session.origin == "replay" and src is not None:
             extra["device"] = {"serial": getattr(src, "device_id", None)}
+        if self.session is not None and self.session.origin == "live" and src is not None:
+            device_record = getattr(src, "device_record", None)
+            if device_record is not None:
+                extra["device"] = device_record()
+            extra["raw"] = self._live_raw_info()
+            warnings = list(getattr(src, "warnings", []) or [])
+            if warnings:
+                extra["warnings"] = warnings
         if self.graph is not None and len(self.graph):
             extra["pipeline"] = self.graph.stats_dict()
         return extra
+
+    def _live_raw_info(self) -> RawInfo:
+        """``manifest.raw`` for a live session: the VRS files the SDK wrote, with checksums."""
+        from ariastreamlab.storage.layout import sha256_file
+
+        files = list(getattr(self.source, "vrs_files", []) or [])
+        root = self.session_dir
+        if not files or root is None or not self.config.storage.save_raw_vrs:
+            return RawInfo(
+                kind="none" if not self.config.storage.save_raw_vrs else "host_received_vrs"
+            )
+        rel = [
+            str(Path(f).relative_to(root)) if Path(f).is_relative_to(root) else str(f)
+            for f in files
+        ]
+        return RawInfo(
+            kind="host_received_vrs",
+            files=rel,
+            sha256={r: sha256_file(Path(f)) for r, f in zip(rel, files, strict=True)},
+        )
 
     def _initial_calibration(self) -> dict[str, Any] | None:
         """Calibration known before start (VRS replay reads it from the file)."""

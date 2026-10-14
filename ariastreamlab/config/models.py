@@ -39,8 +39,13 @@ class ExperimentInfo(_Strict):
 class HotspotConfig(_Strict):
     """Parameters of the glasses' Wi-Fi hotspot (``aria_gen2 device hotspot start``)."""
 
+    start: bool = Field(
+        default=True,
+        description="Run `device hotspot start` before streaming (false: the hotspot is already "
+        "up and the laptop is on it)",
+    )
     band: Literal["2.4GHz", "5GHz", "6GHz"] = "5GHz"
-    bandwidth: Literal["20MHz", "40MHz", "80MHz", "160MHz"] = "80MHz"
+    bandwidth: Literal["20MHz", "40MHz", "80MHz", "160MHz"] = "40MHz"
     auto_join: bool = Field(
         default=False,
         description="macOS only: join the hotspot with `networksetup` instead of asking the user",

@@ -8,6 +8,7 @@ can tell an exact device timestamp (replay) from an estimated one (live marker).
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import threading
 from collections.abc import Mapping
@@ -107,10 +108,25 @@ class EventLog:
         self._bus.publish(f"events.{event.kind}", event)
         return event
 
-    def all(self) -> list[Event]:
-        """Copy of all events so far."""
+    def all(self, *, resolve: bool = True) -> list[Event]:
+        """Copy of all events so far.
+
+        With ``resolve`` (the default) events stamped before any sample arrived
+        (``timestamp_source == "host_only"``, e.g. the device state changes during
+        connection) get their device timestamp estimated with the offset known now, so the
+        stored events sort correctly against the sensor data.
+        """
         with self._lock:
-            return list(self._events)
+            events = list(self._events)
+        if not resolve or not self._estimator.ready:
+            return events
+        out: list[Event] = []
+        for e in events:
+            if e.timestamp_source == "host_only":
+                device_ns, how = self._estimator.device_from_host(e.host_timestamp_ns)
+                e = dataclasses.replace(e, device_timestamp_ns=device_ns, timestamp_source=how)
+            out.append(e)
+        return out
 
     def __len__(self) -> int:
         return len(self._events)
