@@ -20,6 +20,7 @@ SDK exceptions into :class:`DeviceError` with a hint for the student.
 from __future__ import annotations
 
 import platform
+import re
 import socket
 import subprocess
 import threading
@@ -296,9 +297,35 @@ class AriaGen2DeviceManager(DeviceManager):
         hs = self.config.connection.hotspot
         pref = self.config.connection.preferred_control
         use_ble = pref == "ble" or (pref == "auto" and self._device is None and bool(self.serial))
+        # Already up and the laptop is on it? Then do not touch it: `hotspot start` on a
+        # running hotspot bounces the access point and the laptop falls back to its usual
+        # network, after which the device reaches us over the USB link only (run 10).
+        current = current_wifi_ssid()
+        try:
+            status = self.cli.hotspot_status(ble=use_ble)
+        except DeviceError as exc:
+            status = None
+            log.debug("device.hotspot_status_failed", error=str(exc))
+        if (
+            status is not None
+            and hotspot_enabled(status)
+            and status.ssid
+            and current == status.ssid
+        ):
+            self.hotspot = status
+            self._record("hotspot_reused", ssid=status.ssid, laptop_ssid=current)
+            log.info("hotspot.reused", ssid=status.ssid)
+            if self.machine.state in (DeviceState.CONNECTED, DeviceState.DISCOVERED):
+                self.machine.transition(
+                    DeviceState.NETWORK_CONFIGURED,
+                    reason=f"already on hotspot {status.ssid}",
+                    transport=self.transport,
+                    now_ns=self._now(),
+                )
+            return status
         info = self.cli.hotspot_start(hs.band, hs.bandwidth, ble=use_ble)
         self.hotspot = info
-        self._record("hotspot_start", ble=use_ble, ssid=info.ssid)
+        self._record("hotspot_start", ble=use_ble, ssid=info.ssid, laptop_ssid=current)
         joined = False
         if hs.auto_join and platform.system() == "Darwin" and info.ssid and info.password:
             joined = _macos_join_wifi(info.ssid, info.password)
@@ -461,6 +488,37 @@ def _import_sdk() -> Any:
             hint="pip install 'ariastreamlab[aria]' (requires Meta's projectaria_client_sdk wheel)",
         ) from exc
     return sdk
+
+
+def hotspot_enabled(info: HotspotInfo) -> bool:
+    """``enabled: 1`` in the ``hotspot status`` output."""
+    m = re.search(r"^\s*enabled\s*:\s*(\d+)", info.raw_output, re.M | re.I)
+    return bool(m and m.group(1) != "0")
+
+
+def current_wifi_ssid() -> str | None:
+    """The SSID this laptop is on (macOS and common Linux tools; ``None`` when unknown)."""
+    system = platform.system()
+    candidates: list[tuple[list[str], str]] = []
+    if system == "Darwin":
+        candidates = [
+            (["networksetup", "-getairportnetwork", "en0"], r"Current Wi-Fi Network:\s*(.+)"),
+            (["ipconfig", "getsummary", "en0"], r"^\s*SSID\s*:\s*(.+)$"),
+        ]
+    elif system == "Linux":
+        candidates = [
+            (["iwgetid", "-r"], r"^(.+)$"),
+            (["nmcli", "-t", "-f", "active,ssid", "dev", "wifi"], r"^yes:(.+)$"),
+        ]
+    for argv, pattern in candidates:
+        try:
+            out = subprocess.run(argv, capture_output=True, text=True, timeout=10).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        m = re.search(pattern, out, re.M)
+        if m and m.group(1).strip():
+            return m.group(1).strip()
+    return None
 
 
 def _default_prompt(message: str) -> None:

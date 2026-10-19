@@ -40,10 +40,13 @@ ariastreamlab run pilot.json --duration 300
 What happens, in order (each step is a `device_state` event in `events/events.parquet`):
 
 1. **connect** over the USB network link (no adb needed) → `CONNECTED`;
-2. **hotspot** — with `wifi_sap`, `aria_gen2 device hotspot start` runs (over USB, or BLE when
-   `preferred_control` is `ble`), the SSID and password are printed, and the run waits for you
-   to join that network and press ENTER (`hotspot.auto_join: true` does it with `networksetup`
-   on macOS; `hotspot.start: false` skips the step when the laptop is already on it) → `NETWORK_CONFIGURED`;
+2. **hotspot** — with `wifi_sap`, the adapter first asks the device for its hotspot status: if
+   the hotspot is up and this laptop is already on it, nothing is touched (restarting a running
+   hotspot bounces the access point and the laptop falls back to its home network — the device
+   then reaches the laptop over the USB link only). Otherwise `aria_gen2 device hotspot start`
+   runs (over USB, or BLE when `preferred_control` is `ble`), the SSID and password are printed,
+   and the run waits for you to join that network and press ENTER (`hotspot.auto_join: true`
+   does it with `networksetup` on macOS; `hotspot.start: false` skips the step entirely) → `NETWORK_CONFIGURED`;
 3. **configure** — a streaming certificate is shared between the device and this laptop
    (`aria_gen2 streaming install-certs` runs only when the laptop has none yet: it generates
    a *new* certificate each time, so `device.connection.install_certs: "always"` forces a

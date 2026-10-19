@@ -322,10 +322,17 @@ class FakeCli:
     def __init__(self) -> None:
         self.calls: list[str] = []
         self.cert = "cert_3"
+        self.hotspot_up = False
 
     def hotspot_start(self, band: str, bandwidth: str, *, ble: bool = False) -> Any:
         self.calls.append(f"hotspot {band} {bandwidth} ble={ble}")
         return parse_hotspot(HOTSPOT_OUT)
+
+    def hotspot_status(self, *, ble: bool = False) -> Any:
+        self.calls.append("hotspot status")
+        return parse_hotspot(
+            HOTSPOT_OUT if self.hotspot_up else "Wifi hotspot status\nenabled: 0\n"
+        )
 
     def install_streaming_certs(self) -> str | None:
         self.calls.append("install-certs")
@@ -337,6 +344,26 @@ class FakeCli:
 @pytest.fixture(autouse=True)
 def _no_local_certs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(device_mod, "local_streaming_cert_name", lambda: None)
+    monkeypatch.setattr(device_mod, "current_wifi_ssid", lambda: "HomeWifi")
+
+
+def test_hotspot_is_reused_when_the_laptop_is_already_on_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ariastreamlab.acquisition.aria_gen2.device import hotspot_enabled
+
+    assert hotspot_enabled(parse_hotspot(HOTSPOT_OUT))
+    assert not hotspot_enabled(parse_hotspot("enabled: 0\nssid: x"))
+    sdk, cli, seen = FakeSdk(), FakeCli(), []
+    cli.hotspot_up = True
+    monkeypatch.setattr(device_mod, "current_wifi_ssid", lambda: "Aria-M2FHCZP6")
+    mgr = _manager(sdk, cli, seen)
+    mgr.connect()
+    info = mgr.prepare_hotspot()
+    assert info.ssid == "Aria-M2FHCZP6"
+    assert cli.calls == ["hotspot status"]  # no restart, no prompt
+    assert "PROMPT" not in seen and seen[-1] == "NETWORK_CONFIGURED"
+    assert mgr.transport_log[-1]["op"] == "hotspot_reused"
 
 
 def test_local_streaming_cert_name(tmp_path: Path) -> None:
@@ -388,7 +415,7 @@ def test_manager_full_sequence(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
     assert h.battery_percent == 77 and h.skin_temperature_c == 31.5 and h.charging is True
     info = mgr.prepare_hotspot()
     assert info.ssid == "Aria-M2FHCZP6" and seen[-2:] == ["PROMPT", "NETWORK_CONFIGURED"]
-    assert cli.calls[0] == "hotspot 5GHz 40MHz ble=False"
+    assert cli.calls[:2] == ["hotspot status", "hotspot 5GHz 40MHz ble=False"]
     plan = build_plan(_cfg(), tmp_path)
     mgr.configure_streaming(plan)
     assert mgr.state is DeviceState.STREAM_READY and mgr.cert_name == "cert_3"
