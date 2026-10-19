@@ -170,8 +170,11 @@ class AriaGen2Source(Source):
         with contextlib.suppress(DeviceError):
             if mgr.state in (DeviceState.STREAMING, DeviceState.STOPPING):
                 mgr.stop_streaming()
-        # let the last batches arrive, then release the receiver (which finalises the VRS)
+        # let the last batches arrive and the SDK's queue processors go quiet, then release
+        # the receiver (which finalises the VRS). Tearing down while an image is still being
+        # decoded on an SDK thread crashed the interpreter (hardware run 10).
         self._wait_connections_closed(timeout=5.0)
+        self._wait_quiescent(quiet_s=1.5, timeout=20.0)
         self._teardown_receiver()
         self._collect_vrs_files()
         if self._monitor is not None:
@@ -282,6 +285,20 @@ class AriaGen2Source(Source):
                 return
             time.sleep(0.25)
 
+    def _wait_quiescent(self, *, quiet_s: float, timeout: float) -> None:
+        """Return once no callback has fired for ``quiet_s`` (bounded by ``timeout``)."""
+        binder = self._binder
+        if binder is None:
+            return
+        deadline = time.monotonic() + timeout
+        quiet_ns = int(quiet_s * 1e9)
+        while time.monotonic() < deadline:
+            last = binder.last_host_ns
+            if last == 0 or self.clock.now_ns() - last >= quiet_ns:
+                return
+            time.sleep(0.1)
+        log.warning("live.not_quiescent", note=f"callbacks still firing after {timeout:g} s")
+
     def _collect_vrs_files(self) -> None:
         if not self.plan.record_vrs_path:
             return
@@ -329,6 +346,14 @@ class AriaGen2Source(Source):
                     self.stream_source_ip = str(ip)
                     self.data_path = "usb" if self._is_usb_ip(str(ip)) else "wifi"
                     log.info("live.device_connected", client_ip=ip, data_path=self.data_path)
+                    if self.data_path == "usb" and self.plan.interface != "usb":
+                        msg = (
+                            f"the device pushes data over the USB link ({ip}) although the "
+                            f"plan asked for {self.plan.interface}: the laptop is probably "
+                            "not on the hotspot; keep the cable in for this session"
+                        )
+                        self.warnings.append(msg)
+                        log.warning("live.data_over_usb", note=msg)
                 if (
                     not wifi_control_tried
                     and self.data_path == "wifi"

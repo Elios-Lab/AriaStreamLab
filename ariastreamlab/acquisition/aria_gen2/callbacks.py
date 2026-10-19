@@ -51,6 +51,8 @@ class CallbackBinder:
         self._lock = threading.Lock()
         self._seq: Counter[str] = Counter()
         self.received: Counter[str] = Counter()
+        self.last_host_ns: int = 0
+        """Host time of the most recent callback (to detect quiescence before teardown)."""
         self.errors: Counter[str] = Counter()
         self.calibration: dict[str, Any] | None = None
 
@@ -76,6 +78,7 @@ class CallbackBinder:
                 seq = self._seq[stream_id]
             self._seq[stream_id] = seq + 1
             self.received[stream_id] += 1
+            self.last_host_ns = host
         self._bus.publish(
             f"raw.{stream_id}",
             Sample(
