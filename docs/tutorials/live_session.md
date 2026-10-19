@@ -44,8 +44,11 @@ What happens, in order (each step is a `device_state` event in `events/events.pa
    `preferred_control` is `ble`), the SSID and password are printed, and the run waits for you
    to join that network and press ENTER (`hotspot.auto_join: true` does it with `networksetup`
    on macOS; `hotspot.start: false` skips the step when the laptop is already on it) → `NETWORK_CONFIGURED`;
-3. **configure** — streaming certificates are installed once, `HttpStreamingConfig` is pushed,
-   our receiver starts on `0.0.0.0:6768` → `STREAM_READY`;
+3. **configure** — a streaming certificate is shared between the device and this laptop
+   (`aria_gen2 streaming install-certs` runs only when the laptop has none yet: it generates
+   a *new* certificate each time, so `device.connection.install_certs: "always"` forces a
+   refresh and `"never"` skips it), our receiver starts on `0.0.0.0:6768` with that
+   certificate, `HttpStreamingConfig` names it to the device → `STREAM_READY`;
 4. **stream** → `STREAMING`. The glasses find the laptop as `oatmeal_server.local` and push
    data; the first samples arrive within a few seconds.
 5. **control moves to Wi-Fi**: once data flows over the hotspot, the adapter opens a second
@@ -91,7 +94,7 @@ glasses by ~7 °C in two minutes, so keep wireless sessions short (≈20 min) or
 |---|---|
 | `no Aria Gen 2 glasses found` | cable not in, or not paired: `aria_gen2 device list`, `aria_gen2 auth check` |
 | `cannot start the streaming server on port 6768` | another receiver (`aria_streaming_viewer`, a previous run) holds the port: stop it or set `device.connection.server_port` |
-| `no data received 20 s after start_streaming` | the laptop is not on the hotspot, a firewall blocks incoming 6768, or the device cannot resolve `oatmeal_server.local`; `ariastreamlab doctor` lists what to check |
+| `no data received 20 s after start_streaming` | the laptop is not on the hotspot, a firewall blocks incoming 6768, the device cannot resolve `oatmeal_server.local`, or the certificate names differ (the SDK logs `Obtaining server cert name: cert_A` for our server and `Using preinstalled streaming certs: cert_B` for the device — they must be equal; run `aria_gen2 streaming install-certs` or set `install_certs: "always"` once) |
 | data arrives but control never moves to Wi-Fi | port 23456 is not reachable on the stream's source address — keep the cable in; stop still works over USB |
 | `start_streaming failed … already streaming` | a previous session was not stopped: `aria_gen2 streaming stop` |
 | rates lower than nominal, device reports 0 drops | transport loss between the glasses and the laptop (visible as gaps in the VRS); move closer, use 5 GHz, or tether |

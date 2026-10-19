@@ -319,29 +319,42 @@ class AriaGen2DeviceManager(DeviceManager):
             )
         return info
 
-    def configure_streaming(self, plan: StreamingPlan) -> None:
-        """Install the certificates once, push ``HttpStreamingConfig``."""
-        dev = self._require_device()
-        sdk = self._sdk
-        self.plan = plan
-        if self.cert_name is None:
+    def prepare_certs(self) -> str | None:
+        """Make sure the device and this host share a streaming certificate; return its name.
+
+        ``aria_gen2 streaming install-certs`` generates a *new* certificate every time and
+        installs it on both sides, so it is run only when this host has none
+        (``install_certs: "auto"``), or always/never as configured. It must run **before**
+        the receiver starts: the SDK server loads the local certificate at ``start_server()``
+        and the device validates against the name it is told (hardware runs 8–9).
+        """
+        mode = self.config.connection.install_certs
+        local = local_streaming_cert_name()
+        if mode == "always" or (mode == "auto" and local is None):
             try:
                 self.cert_name = self.cli.install_streaming_certs()
                 self._record("install_streaming_certs", cert=self.cert_name)
             except DeviceError as exc:
-                # start_streaming installs/rotates certificates itself when none is named
                 log.warning("device.install_certs_failed", error=str(exc))
                 self._record("install_streaming_certs", error=str(exc))
-                self.cert_name = local_streaming_cert_name()
-        local = local_streaming_cert_name()
-        if local is not None and self.cert_name != local:
-            log.warning(
-                "device.cert_name_mismatch",
-                told_device=self.cert_name,
-                local=local,
-                note="using the local name; the device validates our server against it",
-            )
+                self.cert_name = local
+        else:
             self.cert_name = local
+            self._record("streaming_certs", cert=local, reused=True)
+        if self.cert_name is None:
+            log.warning(
+                "device.no_streaming_cert",
+                note="no certificate on this host; start_streaming will try the device's own",
+            )
+        return self.cert_name
+
+    def configure_streaming(self, plan: StreamingPlan) -> None:
+        """Push ``HttpStreamingConfig`` (certificate name from :meth:`prepare_certs`)."""
+        dev = self._require_device()
+        sdk = self._sdk
+        self.plan = plan
+        if self.cert_name is None:
+            self.prepare_certs()
         cfg = sdk.HttpStreamingConfig()
         if plan.profile_json:
             cfg.profile_json = plan.profile_json

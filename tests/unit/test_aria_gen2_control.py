@@ -355,8 +355,12 @@ def test_manager_prefers_the_local_cert_name(
     mgr = _manager(sdk, cli, seen)
     mgr.connect()
     mgr.configure_streaming(build_plan(_cfg(), tmp_path))
-    assert mgr.cert_name == "cert_local"  # not the "cert_3" the CLI output suggested
+    assert mgr.cert_name == "cert_local"  # reused: install-certs would rotate it
+    assert "install-certs" not in cli.calls
     assert mgr._device.config.streaming_cert_name == "cert_local"
+    mgr2 = _manager(sdk, FakeCli(), seen, connection={"install_certs": "always"})
+    mgr2.connect()
+    assert mgr2.prepare_certs() == "cert_3"
 
 
 def _manager(

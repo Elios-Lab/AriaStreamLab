@@ -134,6 +134,7 @@ class AriaGen2Source(Source):
             self.device_id = mgr.serial or self.device_id
             if self.plan.interface == "wifi_sap" and self.config.device.connection.hotspot.start:
                 mgr.prepare_hotspot()
+            mgr.prepare_certs()  # before the server loads the local certificate
             self._start_receiver(bus)
             mgr.configure_streaming(self.plan)
             mgr.start_streaming()

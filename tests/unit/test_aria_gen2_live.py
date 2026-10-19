@@ -228,6 +228,8 @@ def test_live_experiment_end_to_end(
     assert root is not None
     rec = FakeStreamReceiver.instances[0]
     assert rec.started and rec.stopped and rec.vrs_dir == str(root / "raw")
+    ops = [e["op"] for e in src.manager.transport_log]  # type: ignore[attr-defined]
+    assert ops.index("install_streaming_certs") < ops.index("set_streaming_config")
     assert rec.server_config.port == 6768 and rec.server_config.address == "0.0.0.0"
     assert set(rec.callbacks) >= {"imu", "rgb", "raw_message", "device_calib"}
     assert "slam" not in rec.callbacks  # not enabled ⇒ not registered

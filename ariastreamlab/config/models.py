@@ -64,6 +64,12 @@ class ConnectionConfig(_Strict):
         description="null ⇒ 0 for usb, 200 for wifi_sta, 800 for wifi_sap (Meta's recommendations)",
     )
     hotspot: HotspotConfig = Field(default_factory=HotspotConfig)
+    install_certs: Literal["auto", "always", "never"] = Field(
+        default="auto",
+        description="Run `aria_gen2 streaming install-certs` before streaming: auto ⇒ only "
+        "when this host has no streaming certificate yet (the command generates a new one "
+        "and installs it on the device and the host)",
+    )
     reconnect_attempts: int = Field(default=2, ge=0, le=20)
     device_ip: str | None = Field(default=None, description="Skip discovery and connect to this IP")
     server_port: int = Field(default=6768, ge=1024, le=65535)
