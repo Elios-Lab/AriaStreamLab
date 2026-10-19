@@ -334,6 +334,31 @@ class FakeCli:
         return self.cert
 
 
+@pytest.fixture(autouse=True)
+def _no_local_certs(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(device_mod, "local_streaming_cert_name", lambda: None)
+
+
+def test_local_streaming_cert_name(tmp_path: Path) -> None:
+    from ariastreamlab.acquisition.aria_gen2.cli import local_streaming_cert_name
+
+    assert local_streaming_cert_name(tmp_path) is None
+    (tmp_path / "publisher-cert-name").write_text("cert_1791891036001238000\n")
+    assert local_streaming_cert_name(tmp_path) == "cert_1791891036001238000"
+
+
+def test_manager_prefers_the_local_cert_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    sdk, cli, seen = FakeSdk(), FakeCli(), []
+    monkeypatch.setattr(device_mod, "local_streaming_cert_name", lambda: "cert_local")
+    mgr = _manager(sdk, cli, seen)
+    mgr.connect()
+    mgr.configure_streaming(build_plan(_cfg(), tmp_path))
+    assert mgr.cert_name == "cert_local"  # not the "cert_3" the CLI output suggested
+    assert mgr._device.config.streaming_cert_name == "cert_local"
+
+
 def _manager(
     sdk: FakeSdk, cli: FakeCli, transitions: list[str], **dev: Any
 ) -> AriaGen2DeviceManager:

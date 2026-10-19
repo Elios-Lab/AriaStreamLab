@@ -27,7 +27,7 @@ import time
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from ariastreamlab.acquisition.aria_gen2.cli import AriaCli
+from ariastreamlab.acquisition.aria_gen2.cli import AriaCli, local_streaming_cert_name
 from ariastreamlab.acquisition.aria_gen2.quality import QualityStats, parse_quality_stats
 from ariastreamlab.acquisition.base import (
     DeviceHealth,
@@ -312,7 +312,10 @@ class AriaGen2DeviceManager(DeviceManager):
             self._record("hotspot_join", auto=False)
         if self.machine.state in (DeviceState.CONNECTED, DeviceState.DISCOVERED):
             self.machine.transition(
-                DeviceState.NETWORK_CONFIGURED, reason=f"hotspot {info.ssid}", now_ns=self._now()
+                DeviceState.NETWORK_CONFIGURED,
+                reason=f"hotspot {info.ssid}",
+                transport="ble" if use_ble else self.transport,
+                now_ns=self._now(),
             )
         return info
 
@@ -329,6 +332,16 @@ class AriaGen2DeviceManager(DeviceManager):
                 # start_streaming installs/rotates certificates itself when none is named
                 log.warning("device.install_certs_failed", error=str(exc))
                 self._record("install_streaming_certs", error=str(exc))
+                self.cert_name = local_streaming_cert_name()
+        local = local_streaming_cert_name()
+        if local is not None and self.cert_name != local:
+            log.warning(
+                "device.cert_name_mismatch",
+                told_device=self.cert_name,
+                local=local,
+                note="using the local name; the device validates our server against it",
+            )
+            self.cert_name = local
         cfg = sdk.HttpStreamingConfig()
         if plan.profile_json:
             cfg.profile_json = plan.profile_json
@@ -376,7 +389,10 @@ class AriaGen2DeviceManager(DeviceManager):
     def stop_streaming(self) -> None:  # noqa: D102
         if self.machine.state is DeviceState.STREAMING:
             self.machine.transition(
-                DeviceState.STOPPING, reason="stop_streaming", now_ns=self._now()
+                DeviceState.STOPPING,
+                reason="stop_streaming",
+                transport=self.transport,
+                now_ns=self._now(),
             )
         dev = self._device
         if dev is None:

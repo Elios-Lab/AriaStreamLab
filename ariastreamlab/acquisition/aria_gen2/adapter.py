@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from ariastreamlab.acquisition.aria_gen2.callbacks import CallbackBinder
-from ariastreamlab.acquisition.aria_gen2.device import AriaGen2DeviceManager
+from ariastreamlab.acquisition.aria_gen2.device import AriaGen2DeviceManager, _jsonable
 from ariastreamlab.acquisition.aria_gen2.profiles import build_plan
 from ariastreamlab.acquisition.base import (
     DeviceState,
@@ -204,12 +204,14 @@ class AriaGen2Source(Source):
     # -- manifest helpers --------------------------------------------------------------
     def device_record(self) -> dict[str, Any]:
         """What goes into ``manifest.device``."""
-        st = self.manager.last_status
+        st = {k: _jsonable(v) for k, v in self.manager.last_status.items()}
         return {
             "serial": self.device_id,
             "model": "Aria Gen 2",
             "firmware": st.get("firmware_version") or st.get("os_version"),
             "device_mode": st.get("device_mode"),
+            "status": st,
+            "streaming_cert": self.manager.cert_name,
             "profile": self.manager.streaming_info.get("profile") or self.plan.profile_name,
             "streaming_interface": self.plan.interface,
             "batch_period_ms": self.plan.batch_period_ms,
@@ -351,7 +353,10 @@ class AriaGen2Source(Source):
                     "live.no_data",
                     note=msg,
                     hint="is the laptop on the hotspot / same network? firewall on port "
-                    f"{self.plan.server_port}? does the device resolve oatmeal_server.local?",
+                    f"{self.plan.server_port}? does the device resolve oatmeal_server.local? "
+                    f"streaming cert told to the device: {mgr.cert_name} (a mismatch with "
+                    "~/.aria/streaming-certs/persistent fails the TLS handshake silently; "
+                    "run `aria_gen2 streaming install-certs`)",
                 )
             self.link = {
                 "connections": len(conns),

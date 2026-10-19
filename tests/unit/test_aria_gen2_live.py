@@ -149,6 +149,7 @@ def fake_sdk(monkeypatch: pytest.MonkeyPatch) -> FakeSdk:
     monkeypatch.setitem(sys.modules, "aria.stream_receiver", sr)
     monkeypatch.setattr(aria_gen2, "sdk_available", lambda: True)
     monkeypatch.setattr(device_mod, "_import_sdk", lambda: sdk)
+    monkeypatch.setattr(device_mod, "local_streaming_cert_name", lambda: None)
     monkeypatch.setattr(
         device_mod, "tcp_reachable", lambda ip, port=23456, timeout=3.0: ip == "192.168.37.28"
     )
