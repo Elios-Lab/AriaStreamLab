@@ -201,6 +201,7 @@ class AriaGen2DeviceManager(DeviceManager):
         with self._lock:
             client = self._ensure_client()
             sdk = self._sdk
+            devices: list[DeviceInfo] = []
             if target is None:
                 devices = self.discover()
                 pref = self.config.connection.preferred_control
@@ -216,12 +217,21 @@ class AriaGen2DeviceManager(DeviceManager):
                         "`aria_gen2 auth check`",
                     )
                 target = devices[0]
-            if target.ip:
+            if target.transport == "usb":
+                # Over the USB link the verified call is connect() with an empty target
+                # (0.4 s in every probe run); DeviceTarget(ip=<usb link ip>) hung for a
+                # minute and failed with "(9) Failed to read data from socket". The serial
+                # is only passed when several devices are plugged in.
+                many = sum(1 for d in devices if d.transport == "usb") > 1
+                dt = sdk.DeviceTarget(serial=target.serial) if many else sdk.DeviceTarget()
+                self.control_ip = None
+            elif target.ip:
                 dt = sdk.DeviceTarget(ip=target.ip)
+                self.control_ip = target.ip
             else:
                 dt = sdk.DeviceTarget(serial=target.serial)
+                self.control_ip = None
             self.transport = target.transport if target.transport in ("usb", "wifi") else "ip"
-            self.control_ip = target.ip
             self._device = self._call(
                 "connect",
                 lambda: client.connect(dt),

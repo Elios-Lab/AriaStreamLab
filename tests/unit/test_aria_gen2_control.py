@@ -392,7 +392,7 @@ def test_manager_full_sequence(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
         -1
     ] == "stop_streaming"
     assert seen[0] == "DISCOVERED" and "STREAMING" in seen and seen[-1] == "DISCONNECTED"
-    assert "connect ip=192.168.68.165 serial=" in sdk.log[0]
+    assert sdk.log[0] == "connect ip= serial="  # USB: empty target, as verified on hardware
 
 
 def test_manager_connection_errors_and_ip_target() -> None:
