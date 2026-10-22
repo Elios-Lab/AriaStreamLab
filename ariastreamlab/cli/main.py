@@ -334,10 +334,23 @@ def run(
     no_storage: Annotated[
         bool, typer.Option("--no-storage", help="Do not write a session directory")
     ] = False,
+    no_dashboard: Annotated[
+        bool, typer.Option("--no-dashboard", help="Do not start the browser dashboard")
+    ] = False,
+    dashboard_port: Annotated[
+        int | None, typer.Option("--dashboard-port", help="Override dashboard.port")
+    ] = None,
 ) -> None:
     """Run an experiment."""
     try:
-        exp = Experiment.from_json(path, mock=mock, duration_s=duration, persist=not no_storage)
+        exp = Experiment.from_json(
+            path,
+            mock=mock,
+            duration_s=duration,
+            persist=not no_storage,
+            dashboard=False if no_dashboard else None,
+        )
+        _apply_dashboard_port(exp, dashboard_port)
     except AriaStreamLabError as exc:
         _fail(exc)
         return
@@ -379,6 +392,12 @@ def replay(
     no_storage: Annotated[
         bool, typer.Option("--no-storage", help="Do not write a new session directory")
     ] = False,
+    no_dashboard: Annotated[
+        bool, typer.Option("--no-dashboard", help="Do not start the browser dashboard")
+    ] = False,
+    dashboard_port: Annotated[
+        int | None, typer.Option("--dashboard-port", help="Override dashboard.port")
+    ] = None,
 ) -> None:
     """Replay a recorded session through the same pipeline."""
     try:
@@ -394,7 +413,9 @@ def replay(
             else [s.strip() for s in streams.split(",") if s.strip()],
             duration_s=duration,
             persist=not no_storage,
+            dashboard=False if no_dashboard else None,
         )
+        _apply_dashboard_port(exp, dashboard_port)
     except AriaStreamLabError as exc:
         _fail(exc)
         return
@@ -455,6 +476,13 @@ def inspect(
         console.print("[green]repaired[/]")
 
 
+def _apply_dashboard_port(exp: Experiment, port: int | None) -> None:
+    if port is not None:
+        exp.config = exp.config.model_copy(
+            update={"dashboard": exp.config.dashboard.model_copy(update={"port": port})}
+        )
+
+
 def _drive(exp: Experiment, report_every: float, json_summary: bool) -> None:
     # with --json only the summary goes to stdout; progress goes to stderr so that
     # `ariastreamlab run … --json | jq` works
@@ -467,6 +495,8 @@ def _drive(exp: Experiment, report_every: float, json_summary: bool) -> None:
                 + (f" → {exp.session_dir}" if exp.session_dir else "")
                 + " — press Ctrl-C to stop"
             )
+            if exp.dashboard_url:
+                out.print(f"dashboard [link={exp.dashboard_url}]{exp.dashboard_url}[/]")
             import threading
 
             stop_report = threading.Event()

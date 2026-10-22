@@ -220,16 +220,26 @@ class MockSource(Source):
         self._received[sample.stream_id] += 1
 
     def _publish_calibration(self, bus: EventBus, device_ns: int, host_ns: int) -> None:
+        identity = [[1.0, 0, 0, 0], [0, 1.0, 0, 0], [0, 0, 1.0, 0], [0, 0, 0, 1.0]]
+        cameras = {}
+        for sid in self._shapes:
+            h, w = self._shapes[sid][0], self._shapes[sid][1]
+            f = w * 0.8
+            cameras[REGISTRY.get(sid).native_label] = {
+                "stream_id": sid,
+                "image_size": [w, h],
+                "focal_lengths": [f, f],
+                "principal_point": [w / 2, h / 2],
+                "model": "pinhole (mock)",
+                # Fisheye624 layout [f, cx, cy, k0..k5, p0, p1, s0..s3] with no distortion,
+                # so gaze.project_to_rgb works on mock data exactly like on the glasses
+                "projection_params": [f, w / 2, h / 2] + [0.0] * 12,
+                "transform_device_camera": identity,
+            }
         calib = {
             "device_id": MOCK_DEVICE_ID,
-            "cameras": {
-                sid: {
-                    "label": REGISTRY.get(sid).native_label,
-                    "image_size": list(reversed(self._shapes[sid])),
-                    "focal_px": self._shapes[sid][1] * 0.8,
-                }
-                for sid in self._shapes
-            },
+            "cameras": cameras,
+            "transform_device_cpf": identity,
             "note": "synthetic calibration from MockSource",
         }
         bus.publish(

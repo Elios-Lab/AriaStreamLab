@@ -4,13 +4,13 @@ An experiment-oriented Python framework for **Meta Project Aria Gen 2** glasses,
 university students and researchers: one JSON file describes the experiment, one command runs
 it, and the raw VRS recording stays the ground truth while processors produce derived data.
 
-> **Status: Phase 4 (pre-alpha).** Configuration, core data model, timing utilities, event
+> **Status: Phase 5 (pre-alpha).** Configuration, core data model, timing utilities, event
 > bus, synthetic (mock) source, crash-safe session storage, session/VRS replay, the
-> processing graph with plugin processors, the live Aria Gen 2 adapter and the CLI exist;
-> everything but the live path is tested without hardware, the live path against a fake SDK
-> and with a hardware smoke test that passes on a MacBook with the glasses (live session over
-> the hotspot, control hand-over to Wi-Fi, VRS, replay of the session). The dashboard follows
-> in Phase 5 — see
+> processing graph with plugin processors, the live Aria Gen 2 adapter, the browser dashboard
+> and the CLI exist; everything but the live path is tested without hardware, the live path
+> against a fake SDK and with a hardware smoke test that passes on a MacBook with the glasses
+> (live session over the hotspot, control hand-over to Wi-Fi, VRS, replay of the session).
+> Phase 6 (annotations, quality summary, polish) follows — see
 > [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design, the plan and the hardware
 > findings.
 
@@ -27,7 +27,7 @@ Recorded session ──▶ Replay source ──▶ (same event bus, processors a
 python3.11 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"                   # add ",aria" on a machine that talks to the glasses
 ariastreamlab inspect-config examples/mock_experiment.json
-ariastreamlab run examples/mock_experiment.json --mock --duration 10
+ariastreamlab run examples/mock_experiment.json --mock --duration 10    # opens the dashboard
 ariastreamlab inspect sessions/<the new folder>              # what was written, any problems
 ariastreamlab replay sessions/<the new folder> --speed 0     # same pipeline, from disk
 ```
@@ -87,6 +87,21 @@ and `examples/custom_processor/`. Replaying a session at `--speed 0` re-processe
 with back-pressure instead of drop policies, so a recording can be re-analysed with new
 parameters at any time.
 
+## Dashboard
+
+`run` and `replay` serve a browser dashboard at `http://127.0.0.1:8765/` (opened
+automatically; `--no-dashboard`, `--dashboard-port`, or `"dashboard": {"enabled": false}` in the
+JSON turn it off or move it; `ARIASTREAMLAB_DASHBOARD=0` disables it for a whole shell, e.g. a
+batch of replays). It shows the image streams with gaze overlays, any scalar channel on a
+scrolling chart (IMU axes, gaze angles, processor outputs — pick them in the *Signals* card),
+per-stream rates and drops, per-processor counters, the device's battery / temperature / Wi-Fi
+and per-sensor quality on a live session, marker buttons (`trial_start`, `trial_end`, your own
+names) that land in `events/events.parquet` with device time, and pause / speed / seek controls
+on a replay. It is a bus subscriber like any other: it cannot slow down acquisition (its queues
+drop the oldest frame first) and the same page serves live, mock and replay sessions. Anything
+it shows is also available as JSON at `/api/state`, and `Experiment.dashboard_url` tells a
+script where it is.
+
 ## Layout
 
 | Path | Purpose |
@@ -98,9 +113,10 @@ parameters at any time.
 | `ariastreamlab/processing` | `Processor` contract, plugin discovery, per-processor workers (queues, joins, stats), the graph, built-ins |
 | `ariastreamlab/storage` | session layout, manifest, chunked Parquet/image/video writers, reader, timeline index, `inspect`/repair |
 | `ariastreamlab/monitoring` | per-stream rates and drop accounting |
+| `ariastreamlab/dashboard` | `DashboardState` (the bus collector, usable without NiceGUI) and the NiceGUI page |
 | `ariastreamlab/cli` | `ariastreamlab doctor \| devices \| streams \| presets \| processors \| schema \| inspect-config \| run \| replay \| inspect` |
 | `scripts/probe_sdk.py` | raw-SDK hardware probe that answers the assumptions in the architecture doc |
-| `docs/` | architecture, `tutorials/live_session.md`, `tutorials/custom_processors.md` |
+| `docs/` | architecture, `tutorials/live_session.md`, `tutorials/custom_processors.md`, `tutorials/dashboard.md` |
 | `examples/` | experiment files, `custom_processor/` (a processor loaded from a file next to the JSON) |
 
 ## Development

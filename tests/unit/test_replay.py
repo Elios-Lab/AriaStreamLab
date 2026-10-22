@@ -173,6 +173,9 @@ def test_session_replay_reproduces_mock_session_exactly(tmp_path: Path) -> None:
                 assert a.data == b.data
     assert replayed["rgb"][0].provenance.origin == "replay"
     assert replayed["rgb"][0].device_id == "mock-0"
+    # a stream subset never drops the calibration (processors such as gaze projection need it)
+    subset = SessionReplaySource(root, session_id="sub", speed=0.0, streams=["imu_left"])
+    assert set(subset.capabilities.streams) == {"imu_left", "device_calibration"}
     assert src.time_range() is not None
 
 

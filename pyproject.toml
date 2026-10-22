@@ -34,9 +34,11 @@ dependencies = [
 [project.optional-dependencies]
 # Meta's SDK. Only `ariastreamlab.acquisition.aria_gen2` imports it.
 aria = ["projectaria-client-sdk~=2.5", "projectaria-tools~=2.3"]
+# The browser dashboard (`ariastreamlab run` opens it; `--no-dashboard` to skip).
 dashboard = ["nicegui>=2.0"]
 rerun = ["rerun-sdk~=0.33.0"]
 dev = [
+  "nicegui>=2.0",
   "pytest>=8",
   "pytest-timeout>=2.3",
   "ruff>=0.6",

@@ -6,6 +6,8 @@ import os
 
 import pytest
 
+os.environ.setdefault("ARIASTREAMLAB_DASHBOARD", "0")  # tests enable it explicitly
+
 from ariastreamlab.config.models import MockConfig
 from ariastreamlab.core.bus import EventBus
 from ariastreamlab.core.sample import Provenance, Sample

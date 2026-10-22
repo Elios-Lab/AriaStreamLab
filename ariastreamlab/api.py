@@ -17,6 +17,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import os
 import signal
 import threading
 import time
@@ -46,6 +48,12 @@ from ariastreamlab.timing.clock import HostClock
 SampleCallback = Callable[[AnySample], None]
 
 
+def _dashboard_wanted(config: ExperimentConfig, explicit: bool | None) -> bool:
+    if os.environ.get("ARIASTREAMLAB_DASHBOARD", "1") == "0":
+        return False
+    return config.dashboard.enabled if explicit is None else explicit
+
+
 class Experiment:
     """Owns one session: bus, source, processing graph, statistics, events and storage.
 
@@ -56,6 +64,9 @@ class Experiment:
         duration_s: Default run duration (``None`` ⇒ until stopped).
         persist: Write a session directory under ``config.storage.root``.
         source_json: The user's original JSON text, kept as ``experiment.source.json``.
+        dashboard: Show the live dashboard (``None`` ⇒ ``config.dashboard.enabled``; the
+            environment variable ``ARIASTREAMLAB_DASHBOARD=0`` turns it off everywhere, e.g.
+            in CI or batch replays).
     """
 
     def __init__(
@@ -67,9 +78,13 @@ class Experiment:
         duration_s: float | None = None,
         persist: bool = True,
         source_json: str | None = None,
+        dashboard: bool | None = None,
     ) -> None:
         self.config = config
         self.mock = mock
+        self.dashboard_enabled = _dashboard_wanted(config, dashboard)
+        self._dash_state: Any = None
+        self._dash: Any = None
         self._injected_source = source
         self.duration_s = duration_s
         self.persist = persist
@@ -105,6 +120,7 @@ class Experiment:
         mock: bool = False,
         duration_s: float | None = None,
         persist: bool = True,
+        dashboard: bool | None = None,
     ) -> Experiment:
         """Load ``path`` and build the experiment."""
         p = Path(path)
@@ -114,14 +130,27 @@ class Experiment:
             duration_s=duration_s,
             persist=persist,
             source_json=p.read_text(encoding="utf-8"),
+            dashboard=dashboard,
         )
 
     @classmethod
     def from_preset(
-        cls, name: str, *, mock: bool = True, duration_s: float | None = None, persist: bool = True
+        cls,
+        name: str,
+        *,
+        mock: bool = True,
+        duration_s: float | None = None,
+        persist: bool = True,
+        dashboard: bool | None = None,
     ) -> Experiment:
         """Build from a bundled preset (``"rgb_imu"``…)."""
-        return cls(load_preset(name), mock=mock, duration_s=duration_s, persist=persist)
+        return cls(
+            load_preset(name),
+            mock=mock,
+            duration_s=duration_s,
+            persist=persist,
+            dashboard=dashboard,
+        )
 
     @classmethod
     def replay(
@@ -136,6 +165,7 @@ class Experiment:
         streams: list[str] | None = None,
         duration_s: float | None = None,
         persist: bool = True,
+        dashboard: bool | None = None,
     ) -> Experiment:
         """Replay a recorded session directory or a ``.vrs`` file.
 
@@ -168,7 +198,7 @@ class Experiment:
             # max speed: "duration" can only mean recorded time, so make it the window end
             end_s = (start_s or 0.0) + duration_s
             duration_s = None
-        exp = cls(cfg, duration_s=duration_s, persist=persist)
+        exp = cls(cfg, duration_s=duration_s, persist=persist, dashboard=dashboard)
         exp._replay_of = p
         exp._replay_opts = {
             "speed": speed,
@@ -252,6 +282,8 @@ class Experiment:
             )
         )
         self._opened = True
+        if self.dashboard_enabled:
+            self._start_dashboard(origin)
         self._log.info(
             "session.open",
             session_id=self.session.session_id,
@@ -327,6 +359,7 @@ class Experiment:
         try:
             if self.graph is not None:
                 self.graph.start()
+            self._set_dash_state("running")
             self.source.start(self.bus)
             self.events.mark("acquisition_start", kind="session")
             # An unpaced source (max-speed replay, non-realtime mock) interprets ``duration``
@@ -382,6 +415,11 @@ class Experiment:
                 ended_utc_ns=time.time_ns(),
                 extra=self._manifest_extra(),
             )
+        self._set_dash_state("crashed" if self._failed is not None else "finished")
+        if self._dash_state is not None:
+            self._dash_state.stop()
+            if self._dash is not None:
+                self._dash.detach(self._dash_state)
         self.bus.close()
         self._log.info("session.close", **{k: v.received for k, v in self.stream_stats().items()})
         self._opened = False
@@ -490,7 +528,82 @@ class Experiment:
             else {k: v.__dict__ for k, v in self.store.recorder.stats().items()},
         }
 
+    @property
+    def dashboard_url(self) -> str | None:
+        """Where the live dashboard is served (``None`` when disabled)."""
+        return None if self._dash is None else str(self._dash.url)
+
     # -- internals ---------------------------------------------------------------------
+    def _start_dashboard(self, origin: str) -> None:
+        from ariastreamlab.dashboard.app import dashboard_available, get_dashboard
+        from ariastreamlab.dashboard.state import DashboardState
+
+        if not dashboard_available():
+            self._log.warning(
+                "dashboard.unavailable",
+                note="pip install 'ariastreamlab[dashboard]' to see the live view",
+            )
+            return
+        assert self.session is not None
+        assert self.source is not None
+        cfg = self.config.dashboard
+        state = DashboardState(
+            self.bus,
+            streams=cfg.show,
+            image_fps=cfg.image_fps,
+            stats_provider=self.stream_stats,
+            processor_stats_provider=lambda: {
+                k: v.as_dict() for k, v in self.processor_stats().items()
+            },
+        )
+        state.session = {
+            "session_id": self.session.session_id,
+            "experiment": self.config.experiment.name,
+            "participant": self.config.experiment.participant,
+            "origin": origin,
+            "directory": None if self.session_dir is None else str(self.session_dir),
+            "state": "open",
+        }
+        state.start()
+        dash = get_dashboard(cfg)
+        if not dash.start():
+            self._log.warning(
+                "dashboard.unavailable",
+                note="the session runs without a dashboard (is the port free?)",
+                url=dash.url,
+            )
+            state.stop()
+            self.dashboard_enabled = False
+            return
+        rng = None
+        t0 = None
+        time_range = getattr(self.source, "time_range", None)
+        if self.replay_control is not None and time_range is not None:
+            with contextlib.suppress(Exception):
+                r = time_range()
+                if r is not None:
+                    t0 = int(r[0])
+                    rng = (0.0, (int(r[1]) - int(r[0])) / 1e9)
+        dash.attach(
+            state,
+            on_mark=self.mark,
+            replay=self.replay_control,
+            replay_range_s=rng,
+            replay_t0_ns=t0,
+        )
+        self._dash_state, self._dash = state, dash
+        self._log.info("dashboard.url", url=dash.url)
+        if cfg.open_browser and os.environ.get("ARIASTREAMLAB_OPEN_BROWSER", "1") != "0":
+            import webbrowser
+
+            threading.Thread(
+                target=lambda: webbrowser.open(dash.url), name="open-browser", daemon=True
+            ).start()
+
+    def _set_dash_state(self, value: str) -> None:
+        if self._dash_state is not None:
+            self._dash_state.session["state"] = value
+
     def _manifest_extra(self) -> dict[str, Any]:
         extra: dict[str, Any] = {}
         src = self.source

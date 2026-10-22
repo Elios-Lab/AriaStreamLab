@@ -93,6 +93,10 @@ thermal mitigation, Wi-Fi) and every 10 s (`health.quality`: the device's per-se
 counters). Thermal mitigation starts at 42 °C skin temperature; a hotspot session warms the
 glasses by ~7 °C in two minutes, so keep wireless sessions short (≈20 min) or tethered.
 
+All of it is on the dashboard (`http://127.0.0.1:8765/`, opened by `run`): the Device, Link
+and Device-quality cards, the per-stream rates, the images with gaze overlay, and the marker
+buttons — see [dashboard.md](dashboard.md). `--no-dashboard` runs headless.
+
 ## 5. Troubleshooting
 
 On macOS 26 the laptop's SSID is hidden from every command-line tool, so the adapter cannot

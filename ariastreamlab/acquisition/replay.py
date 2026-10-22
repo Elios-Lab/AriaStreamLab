@@ -239,6 +239,10 @@ class SessionReplaySource(PacedReplay):
                 hint="live sessions replay raw/*.vrs; mock sessions need save_mock_raw=true",
             )
         wanted = raw if streams is None else [s for s in streams if s in raw]
+        # calibration is metadata every consumer may need, never part of a stream subset
+        # (the same rule as the live source and the VRS replay)
+        if "device_calibration" in raw and "device_calibration" not in wanted:
+            wanted = [*wanted, "device_calibration"]
         self._streams = wanted
         super().__init__(
             streams=tuple(wanted),
