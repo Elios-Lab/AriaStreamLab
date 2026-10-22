@@ -336,9 +336,15 @@ class AriaGen2DeviceManager(DeviceManager):
                     now_ns=self._now(),
                 )
             return status
-        info = self.cli.hotspot_start(hs.band, hs.bandwidth, ble=use_ble)
+        if status is not None and hotspot_enabled(status) and status.ssid and status.password:
+            # up already (laptop elsewhere or SSID unknown): never restart a running hotspot,
+            # it bounces the access point; just ask for the join with the current credentials
+            info = status
+            self._record("hotspot_running", ssid=info.ssid, laptop_ssid=current)
+        else:
+            info = self.cli.hotspot_start(hs.band, hs.bandwidth, ble=use_ble)
+            self._record("hotspot_start", ble=use_ble, ssid=info.ssid, laptop_ssid=current)
         self.hotspot = info
-        self._record("hotspot_start", ble=use_ble, ssid=info.ssid, laptop_ssid=current)
         joined = False
         if hs.auto_join and platform.system() == "Darwin" and info.ssid and info.password:
             joined = _macos_join_wifi(info.ssid, info.password)
@@ -514,9 +520,11 @@ def current_wifi_ssid() -> str | None:
     system = platform.system()
     candidates: list[tuple[list[str], str]] = []
     if system == "Darwin":
+        # macOS 14+ prints "<redacted>" for the SSID in several tools; `ipconfig getsummary`
+        # still reports it, so it goes first and redacted answers are skipped
         candidates = [
-            (["networksetup", "-getairportnetwork", "en0"], r"Current Wi-Fi Network:\s*(.+)"),
             (["ipconfig", "getsummary", "en0"], r"^\s*SSID\s*:\s*(.+)$"),
+            (["networksetup", "-getairportnetwork", "en0"], r"Current Wi-Fi Network:\s*(.+)"),
             (
                 ["system_profiler", "SPAirPortDataType", "-detailLevel", "basic"],
                 r"Current Network Information:\s*\n\s*(.+?):\s*$",
@@ -533,7 +541,7 @@ def current_wifi_ssid() -> str | None:
         except (OSError, subprocess.TimeoutExpired):
             continue
         m = re.search(pattern, out, re.M)
-        if m and m.group(1).strip():
+        if m and m.group(1).strip() and "redacted" not in m.group(1).lower():
             return m.group(1).strip()
     return None
 

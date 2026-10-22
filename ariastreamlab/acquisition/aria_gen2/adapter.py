@@ -169,6 +169,12 @@ class AriaGen2Source(Source):
             return
         self._stop.set()
         mgr = self.manager
+        # The TimeSyncRef is only safe to read while the device connection is up: reading it
+        # after the device disconnected crashed the interpreter twice (runs 11–12), before
+        # and after stop_server(). Drop it before anything can close the connection.
+        self._time_sync = None
+        if self._monitor is not None:
+            self._monitor.join(3)
         with contextlib.suppress(DeviceError):
             if mgr.state in (DeviceState.STREAMING, DeviceState.STOPPING):
                 mgr.stop_streaming()
@@ -202,7 +208,7 @@ class AriaGen2Source(Source):
             "callback_errors": dict(binder.errors) if binder is not None else {},
             "raw_messages": dict(self._raw_messages),
             "sdk_queues": self._queue_sizes(),
-            "ticsync": self._ticsync(),
+            "ticsync": dict(self._last_ticsync),
             "warnings": list(self.warnings),
         }
         return SourceStats(received, {}, extra)
@@ -292,9 +298,6 @@ class AriaGen2Source(Source):
             self._raw_messages[str(getattr(message, "id", "?")).rsplit(".", 1)[-1]] += 1
 
     def _teardown_receiver(self) -> None:
-        # the TimeSyncRef belongs to the receiver: calling it after stop_server() segfaults
-        # (hardware run 11), so freeze the last reading and drop the reference first
-        self._last_ticsync = self._ticsync()
         self._last_queues = self._queue_sizes()
         receiver, self._receiver, self._server = self._receiver, None, None
         self._time_sync = None
@@ -418,13 +421,15 @@ class AriaGen2Source(Source):
                     "~/.aria/streaming-certs/persistent fails the TLS handshake silently; "
                     "run `aria_gen2 streaming install-certs`)",
                 )
+            if conns:  # only while the device is connected (see stop())
+                self._last_ticsync = self._ticsync()
             self.link = {
                 "connections": len(conns),
                 "data_path": self.data_path,
                 "stream_source_ip": self.stream_source_ip,
                 "control_transport": mgr.transport,
                 "samples": total,
-                "ticsync": self._ticsync(),
+                "ticsync": dict(self._last_ticsync),
                 "sdk_queues": self._queue_sizes(),
             }
             bus.publish("health.link", dict(self.link))

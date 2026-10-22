@@ -347,6 +347,21 @@ def _no_local_certs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(device_mod, "current_wifi_ssid", lambda: "HomeWifi")
 
 
+def test_running_hotspot_is_not_restarted_when_the_laptop_is_elsewhere() -> None:
+    sdk, cli, seen = FakeSdk(), FakeCli(), []
+    cli.hotspot_up = True  # laptop_ssid is "HomeWifi" (autouse fixture)
+    mgr = _manager(sdk, cli, seen)
+    mgr.connect()
+    info = mgr.prepare_hotspot()
+    assert info.ssid == "Aria-M2FHCZP6" and info.password == "10380804"
+    assert cli.calls == ["hotspot status"] and "PROMPT" in seen
+    assert [e["op"] for e in mgr.transport_log][-3:] == [
+        "hotspot_status",
+        "hotspot_running",
+        "hotspot_join",
+    ]
+
+
 def test_hotspot_is_reused_when_the_laptop_is_already_on_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
