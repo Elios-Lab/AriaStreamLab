@@ -7,7 +7,7 @@ Built for researchers who need **trustworthy recordings** and **reproducible ana
 > **Status: 0.2 (alpha).** The complete pipeline (configuration, acquisition adapter, event
 > bus, processing graph, storage, replay, the application window with dashboard, designer and
 > sessions browser, annotations and quality monitoring) exists and is tested without hardware
-> (177 tests); the live path is tested against a fake SDK and verified on a MacBook with the
+> (181 tests); the live path is tested against a fake SDK and verified on a MacBook with the
 > glasses — 15 hardware runs, including the untethered hotspot flow, a replay reproducing the
 > live counts, and a 20-minute session that showed what thermal mitigation does (the glasses
 > stop streaming at 42 °C; the framework now detects it). The design, the plan and all hardware
@@ -52,19 +52,29 @@ AriaStreamLab installed.
 
 ## Install and open the application
 
-Python 3.11 is recommended (3.10–3.12 work; Meta's SDK has no 3.13 wheels yet).
+One command creates a Python environment Meta's SDK supports (3.10–3.12), installs
+AriaStreamLab into it and opens the application:
 
 ```bash
-python3.11 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"                   # add ",aria" on the laptop that talks to the glasses
-ariastreamlab                             # opens the application window
+git clone https://github.com/Elios-Lab/AriaStreamLab.git && cd AriaStreamLab
+bash scripts/install.sh                              # macOS / Linux
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1   # Windows
 ```
 
+(or, by hand: `python3.12 -m venv .venv && source .venv/bin/activate && pip install -e .`,
+then `ariastreamlab`). Everything after that step can be done from the window's **Setup**
+page: it checks the computer (the `doctor` checks: Python, packages, the SDK and its CLI, the
+streaming port, disk space, and with the glasses on the cable the pairing), installs Meta's
+SDK and `projectaria_tools` into the environment with one click, pairs the glasses, installs
+the streaming certificates, starts or inspects the hotspot and stops a stuck stream — each
+command's output streamed into the page. The one thing it cannot do is create the environment
+it runs in, which is what the script is for.
+
 `ariastreamlab` with no arguments opens a desktop window (macOS, Windows, Linux — a native
-window, not a browser tab) with four pages: **Home**, **Design** (build and validate an
-experiment, run it with the glasses or with synthetic data), **Monitor** (the live view of the
-running session) and **Sessions** (browse recordings, read their quality summaries and
-events, replay one, open its folder). `ariastreamlab app --browser` serves the same
+window, not a browser tab) with five pages: **Home**, **Setup**, **Design** (build and
+validate an experiment, run it with the glasses or with synthetic data), **Monitor** (the live
+view of the running session) and **Sessions** (browse recordings, read their quality
+summaries and events, replay one, open its folder). `ariastreamlab app --browser` serves the same
 application to a browser instead; `ariastreamlab app experiment.json` opens with that file
 in the designer. On Linux the window needs GTK WebKit2 or Qt (`pip install 'pywebview[qt]'`);
 without it the application falls back to the browser.
@@ -86,12 +96,13 @@ anywhere.
 
 ## Running an experiment with the glasses
 
-1. **Install the SDK side.** `pip install -e ".[dev,aria]"` adds `projectaria_client_sdk`
-   and `projectaria_tools`.
-2. **Pair.** Connect the glasses over USB, run `aria_gen2 auth pair` and accept in the Aria
-   Companion App; `aria_gen2 auth check` confirms. Pair over Bluetooth as well
-   (`aria_gen2 auth pair --ble --serial <serial>`) if you want to start the hotspot without
-   the cable. `ariastreamlab doctor --device` must report everything green.
+1. **Install the SDK side.** *Install the Aria SDK* on the Setup page, or
+   `pip install -e ".[aria]"` — `projectaria_client_sdk` and `projectaria_tools`.
+2. **Pair.** Connect the glasses over USB, press *pair over USB* on the Setup page (or run
+   `aria_gen2 auth pair`) and accept in the Aria Companion App; *check pairing* confirms. Pair
+   over Bluetooth as well (`aria_gen2 auth pair --ble --serial <serial>`) if you want to start
+   the hotspot without the cable. *Run checks with the glasses* (`ariastreamlab doctor
+   --device`) must report everything green.
 3. **Network.** Data streams over the glasses' own Wi-Fi hotspot. `run` starts it, prints the
    network name and password and waits for you to join it from the laptop (`"hotspot":
    {"auto_join": true}` lets macOS do it). Keep the cable in for the first run; it can be

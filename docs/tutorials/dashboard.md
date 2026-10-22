@@ -1,12 +1,21 @@
 # The application: dashboard, designer, sessions
 
 `ariastreamlab` with no arguments opens the application in a desktop window: **Home**,
-**Design**, **Monitor** and **Sessions**. The window is the system WebView (WebKit on macOS,
+**Setup**, **Design**, **Monitor** and **Sessions**. The window is the system WebView (WebKit on macOS,
 WebView2 on Windows, GTK WebKit2 or Qt on Linux) driven by NiceGUI, so the same pages are
 also what `ariastreamlab run` / `replay` serve to a browser at `http://127.0.0.1:8765/monitor`
 and what `ariastreamlab app --browser` serves; `"dashboard": {"native": true}` makes `run` and
 `replay` open a window too. The acquisition never waits for the window: it runs on worker
 threads and the interface subscribes to the bus like any other consumer.
+
+The **Setup** page shows the environment the application runs in (interpreter, whether it
+is one Meta's SDK supports, the `aria_gen2` CLI, the streaming certificate), the packages
+table, the `doctor` checks (with or without the glasses), and one button per one-time step —
+install the SDK and `projectaria_tools`, upgrade the application's packages, list devices,
+check pairing, pair over USB, install the streaming certificates, hotspot status / start,
+stop a stuck stream — each running one command in the environment with its output streamed
+into the page (one at a time; the destructive ones ask first). It cannot create the
+environment itself: `scripts/install.sh` / `install.ps1` do that.
 
 The **Sessions** page lists the session directories under the experiment's `storage.root`
 (editable), shows the selected session's manifest facts, quality summary, events and

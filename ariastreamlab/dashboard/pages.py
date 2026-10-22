@@ -37,6 +37,13 @@ def build_home_page(dash: Any, ui: Any) -> None:
         with ui.row().classes("gap-4 flex-wrap justify-center pt-4"):
             cards = (
                 (
+                    "Setup",
+                    "build",
+                    "/setup",
+                    "Check this computer, install Meta's SDK, pair the glasses, install the "
+                    "streaming certificates, start the hotspot.",
+                ),
+                (
                     "Design an experiment",
                     "science",
                     "/design",
@@ -61,7 +68,7 @@ def build_home_page(dash: Any, ui: Any) -> None:
             for title, icon, path, text in cards:
                 with (
                     ui.card()
-                    .classes("w-[320px] p-5 cursor-pointer hover:bg-[#2a2a2a]")
+                    .classes("w-[300px] p-5 cursor-pointer hover:bg-[#2a2a2a]")
                     .on("click", lambda _e, p=path: ui.navigate.to(p))
                 ):
                     with ui.row().classes("items-center gap-2"):

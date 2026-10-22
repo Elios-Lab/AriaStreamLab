@@ -12,6 +12,10 @@ Sessions pages; `ariastreamlab app --browser` serves the same application to a b
 - `dashboard.native` lets `run` and `replay` open a window instead of a browser tab.
 - `api.serve_app`, `api.launch_replay`; pywebview is a core dependency, with a browser
   fallback when no WebView is available.
+- Setup page: environment, packages, the `doctor` checks, and one-click install of Meta's
+  SDK / `projectaria_tools`, pairing, streaming certificates, hotspot and stuck-stream
+  commands with their output streamed into the page; `scripts/install.sh` / `install.ps1`
+  create a supported Python environment and start the application.
 
 ## 0.1.1 — 2026-10-22
 

@@ -9,6 +9,9 @@ the things that cost recording time.
 
 ## 0. One-time setup
 
+The application's **Setup** page does all of this with buttons and shows each command's
+output; the commands behind them:
+
 1. Install the SDK in the same environment as AriaStreamLab: `pip install 'ariastreamlab[aria]'`
    (`projectaria_client_sdk` + `projectaria_tools`).
 2. Pair the laptop with the glasses over USB: `aria_gen2 auth pair`, accept in the Companion

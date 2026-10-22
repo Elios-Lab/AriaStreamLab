@@ -82,6 +82,9 @@ class Dashboard:
         """Builds an experiment for :meth:`launch`; set by ``api`` (keeps this layer below it)."""
         self.replay_launcher: Callable[..., Any] | None = None
         """``replay_launcher(path, speed=…) -> Experiment`` for the Sessions page (set by api)."""
+        self.setup_run: Any = None  # the Setup page's current command (one at a time)
+        self.setup_checks: Any = None  # the last doctor result
+        self._setup_checks_shown: Any = None
         self._prompt_lock = threading.Lock()
         self._prompt: tuple[int, str, threading.Event] | None = None
         self._prompt_seq = 0
@@ -276,6 +279,12 @@ class Dashboard:
             from ariastreamlab.dashboard.pages import build_sessions_page
 
             build_sessions_page(dash, ui)
+
+        @ui.page("/setup")
+        def setup() -> None:
+            from ariastreamlab.dashboard.setup_ui import build_setup_page
+
+            build_setup_page(dash, ui)
 
     # -- the designer and sessions started from the browser ---------------------------------
     @property
@@ -479,7 +488,13 @@ def _fmt_t(t_s: float | None) -> str:
     return "host time" if t_s is None else f"{t_s:.2f} s"
 
 
-NAV = (("home", "/"), ("design", "/design"), ("monitor", "/monitor"), ("sessions", "/sessions"))
+NAV = (
+    ("home", "/"),
+    ("setup", "/setup"),
+    ("design", "/design"),
+    ("monitor", "/monitor"),
+    ("sessions", "/sessions"),
+)
 
 
 def nav_header(ui: Any, current: str) -> Any:
