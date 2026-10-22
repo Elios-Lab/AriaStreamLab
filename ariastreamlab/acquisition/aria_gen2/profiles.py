@@ -46,8 +46,10 @@ KNOWN_PROFILE_STREAMS: dict[str, frozenset[str]] = {
     ),
 }
 
-#: Measured live rates for profile9 that differ from the registry's nominal values.
-PROFILE9_MEASURED_RATES_HZ: dict[str, float] = {"rgb": 5.0, "eye_gaze": 25.0, "hand_tracking": 25.0}
+#: Measured live rates for profile9 that differ from the registry's nominal values. Eye gaze
+#: and hand tracking looked like 25 Hz in the 20-second probe runs but are 30 Hz in steady
+#: state (run 15: 16 862 gaze samples over 9.4 min at exactly 30 Hz) — a start-up transient.
+PROFILE9_MEASURED_RATES_HZ: dict[str, float] = {"rgb": 5.0}
 
 
 def build_plan(config: ExperimentConfig, raw_dir: Path | None) -> StreamingPlan:
@@ -114,12 +116,22 @@ def build_plan(config: ExperimentConfig, raw_dir: Path | None) -> StreamingPlan:
             f"profile {profile_name!r} has not been measured; stream availability unknown"
         )
 
+    expected: dict[str, float] = {}
+    for sid in live:
+        d = REGISTRY.get(sid)
+        if profile_name == DEFAULT_PROFILE and sid in PROFILE9_MEASURED_RATES_HZ:
+            expected[sid] = PROFILE9_MEASURED_RATES_HZ[sid]
+        elif d.nominal_rate_hz:
+            params = config.enabled_streams().get(sid, {})
+            wanted = params.get("fps") or params.get("rate_hz")
+            expected[sid] = float(wanted) if wanted else float(d.nominal_rate_hz)
     return StreamingPlan(
         streams=tuple(live),
         interface=conn.streaming_interface,
         batch_period_ms=conn.effective_batch_period_ms,
         profile_name=profile_name,
         profile_json=profile_json,
+        expected_rates_hz=expected,
         record_vrs_path=None
         if raw_dir is None or not config.storage.save_raw_vrs
         else str(raw_dir),

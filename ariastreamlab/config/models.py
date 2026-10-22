@@ -77,6 +77,17 @@ class ConnectionConfig(_Strict):
         "(stalls the data path for the duration of the SDK connect call), or never",
     )
     reconnect_attempts: int = Field(default=2, ge=0, le=20)
+    stall_timeout_s: float = Field(
+        default=30.0,
+        ge=0,
+        description="After data has flowed, this many seconds without any sample is a stall "
+        "(a warning event; 0 disables the check)",
+    )
+    on_stall: Literal["stop", "continue"] = Field(
+        default="stop",
+        description="What a stall does to the session: end it cleanly (the glasses stop "
+        "streaming on their own when thermal mitigation triggers) or keep waiting",
+    )
     device_ip: str | None = Field(default=None, description="Skip discovery and connect to this IP")
     server_port: int = Field(default=6768, ge=1024, le=65535)
 

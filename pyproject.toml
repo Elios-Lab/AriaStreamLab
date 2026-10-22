@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ariastreamlab"
-version = "0.1.0.dev0"
+version = "0.1.1"
 description = "Experiment-oriented framework for Meta Project Aria Gen 2 glasses: acquisition, realtime processing, storage, replay and monitoring."
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
@@ -29,16 +29,18 @@ dependencies = [
   "typer>=0.12",
   "rich>=13",
   "opencv-python-headless>=4.9",
+  # the dashboard is how a researcher sees a stall or a thermal shutdown while it happens
+  # (hardware run 15 ran blind without it), so it is not optional
+  "nicegui>=2.0",
 ]
 
 [project.optional-dependencies]
 # Meta's SDK. Only `ariastreamlab.acquisition.aria_gen2` imports it.
 aria = ["projectaria-client-sdk~=2.5", "projectaria-tools~=2.3"]
-# The browser dashboard (`ariastreamlab run` opens it; `--no-dashboard` to skip).
-dashboard = ["nicegui>=2.0"]
+# Kept for compatibility: the dashboard is a core dependency since 0.1.1.
+dashboard = []
 rerun = ["rerun-sdk~=0.33.0"]
 dev = [
-  "nicegui>=2.0",
   "pytest>=8",
   "pytest-timeout>=2.3",
   "ruff>=0.6",

@@ -102,8 +102,15 @@ ariastreamlab replay sessions/<folder>/raw/<file>.vrs --config other.json
 The adapter publishes on the bus every second (`health.link`: connections, data path, SDK
 queue depths, TicSync), every 5 s (`health.device`: battery, charging, skin temperature,
 thermal mitigation, Wi-Fi) and every 10 s (`health.quality`: the device's per-sensor
-counters). Thermal mitigation starts at 42 °C skin temperature; a hotspot session warms the
-glasses by ~7 °C in two minutes, so keep wireless sessions short (≈20 min) or tethered.
+counters). **Thermal mitigation starts at 42 °C skin temperature and ends the streaming
+session**: the glasses stop sending, their sensors switch off, and nothing restarts by
+itself. In the 20-minute validation run the temperature went from 29 °C to 42 °C in 9½
+minutes while the glasses were charging over USB; the adapter detects the resulting stall
+(`device.connection.stall_timeout_s`, 30 s) and, by default, ends the session cleanly with a
+`warning` event and the quality summary saying what happened (`on_stall: "continue"` keeps
+waiting instead). So, for wireless sessions longer than a few minutes: do not charge while
+streaming over the hotspot, watch the Device card's temperature, and plan sessions around the
+cooling time; streaming over USB (`streaming_interface: "usb"`) runs much cooler.
 
 All of it is on the dashboard (`http://127.0.0.1:8765/`, opened by `run`): the Device, Link
 and Device-quality cards, the per-stream rates, the images with the gaze overlay, and the
@@ -124,5 +131,7 @@ is not restarted). Set `device.connection.hotspot.start: false` to skip the ques
 | `no data received 20 s after start_streaming` | the laptop is not on the hotspot, a firewall blocks incoming 6768, the device cannot resolve `oatmeal_server.local`, or the certificate names differ (the SDK logs `Obtaining server cert name: cert_A` for our server and `Using preinstalled streaming certs: cert_B` for the device — they must be equal; run `aria_gen2 streaming install-certs` or set `install_certs: "always"` once) |
 | data arrives but control never moves to Wi-Fi | port 23456 is not reachable on the stream's source address — keep the cable in; stop still works over USB |
 | `start_streaming failed … already streaming` | a previous session was not stopped: `aria_gen2 streaming stop` |
-| rates lower than nominal, device reports 0 drops | transport loss between the glasses and the laptop (visible as gaps in the VRS); move closer, use 5 GHz, or tether |
-| eye gaze at 25 Hz instead of 30 | that is what the device delivers over this path (measured); not a bug in your configuration |
+| rates lower than nominal, device reports 0 drops | first check the summary's *coverage*: an outage is not a rate problem. Otherwise transport loss between the glasses and the laptop (visible as gaps in the VRS); move closer, use 5 GHz, or tether |
+| eye gaze at 25 Hz in the first seconds | a start-up transient; it settles at 30 Hz (measured over 9 min in run 15) |
+| rates fine, then `stream stalled` and the session ends | the glasses stopped streaming — almost always thermal mitigation (Device card: skin temperature ≥ 42 °C, charging); let them cool, do not charge while streaming wirelessly |
+| `stop_streaming failed … No active session to stop` | the device had already ended the session (thermal mitigation); harmless, the session is finalised normally |

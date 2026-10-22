@@ -459,9 +459,14 @@ class AriaGen2DeviceManager(DeviceManager):
         try:
             self._call("stop_streaming", dev.stop_streaming)
         except DeviceError as exc:
-            log.error("device.stop_streaming_failed", error=str(exc))
-            self.machine.fail(exc, now_ns=self._now(), transport=self.transport)
-            raise
+            if "no active session" in str(exc).lower():
+                # the device ended the streaming session itself (thermal mitigation, run 15)
+                log.warning("device.already_stopped", note=str(exc))
+                self._record("already_stopped", error=str(exc))
+            else:
+                log.error("device.stop_streaming_failed", error=str(exc))
+                self.machine.fail(exc, now_ns=self._now(), transport=self.transport)
+                raise
         if self.machine.state is DeviceState.STOPPING:
             self.machine.transition(
                 DeviceState.CONNECTED,

@@ -252,8 +252,9 @@ def test_live_experiment_end_to_end(
     assert m.raw.kind == "host_received_vrs" and m.raw.files == ["raw/2026-10-14-10:00:00.vrs"]
     assert len(m.raw.sha256["raw/2026-10-14-10:00:00.vrs"]) == 64
     assert (root / "raw" / "2026-10-14-10:00:00.vrs").stat().st_size > 5000
-    assert any("Wi-Fi" in w for w in m.warnings)
     extra = m.model_dump()
+    assert any("Wi-Fi" in n for n in extra["notes"])  # a note, not a warning
+    assert not any("Wi-Fi" in w for w in m.warnings)
     assert extra["device"]["profile"] == "profile9" and extra["device"]["data_path"] == "wifi"
     evs = read_events(root / "events" / "events.parquet")
     states = [e.name for e in evs if e.kind == "device_state"]
@@ -312,7 +313,7 @@ def test_control_moves_to_wifi_only_when_the_usb_link_disappears(
     fake_sdk.usb = []  # cable out
     time.sleep(2.5)
     assert mgr.transport == "wifi" and mgr.control_ip == "192.168.37.28"
-    assert any("control moved to Wi-Fi" in w for w in src.warnings)
+    assert any("control moved to Wi-Fi" in n for n in src.notes)
     src.stop()
     bus.close()
 
@@ -352,3 +353,69 @@ def test_live_source_direct_with_bus(fake_sdk: FakeSdk, tmp_path: Path) -> None:
     assert json.dumps(d)  # JSON-able for the manifest
     assert src.finished.is_set()
     bus.close()
+
+
+def test_stall_is_detected_and_ends_the_session(
+    fake_sdk: FakeSdk, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The glasses stop streaming (thermal mitigation, run 15): a warning event, then a stop."""
+    cfg = _config(
+        tmp_path,
+        device={
+            "connection": {
+                "hotspot": {"start": False},
+                "wifi_control": "never",
+                "stall_timeout_s": 1.0,
+                "on_stall": "stop",
+            }
+        },
+    )
+    original = aria_gen2.make_live_source
+
+    def fast(config: Any, **kw: Any) -> Any:
+        kw["manager"] = device_mod.AriaGen2DeviceManager(config.device, sdk=fake_sdk, cli=FakeCli())
+        return original(config, health_interval_s=0.5, quality_interval_s=0.5, **kw)
+
+    monkeypatch.setattr(aria_gen2, "make_live_source", fast)
+    exp = Experiment(cfg, duration_s=30.0)  # far longer than the data will flow
+    t_run = time.monotonic()
+    with exp:
+        src = exp.source
+
+        def feed_then_stop() -> None:
+            deadline = time.monotonic() + 5
+            while not FakeStreamReceiver.instances and time.monotonic() < deadline:
+                time.sleep(0.01)
+            rec = FakeStreamReceiver.instances[0]
+            while time.monotonic() < deadline and not rec.started:
+                time.sleep(0.01)
+            rec.connect_device()
+            t = 1_000_000_000
+            for _ in range(10):  # one second of data, then silence
+                rec.push_imu(80, t)
+                rec.push_rgb(1, t)
+                t += 100_000_000
+                time.sleep(0.1)
+
+        threading.Thread(target=feed_then_stop, daemon=True).start()
+        exp.run()
+        elapsed = time.monotonic() - t_run
+        link_stalled = src.link.get("stalled_s")  # type: ignore[union-attr]
+        root = exp.session_dir
+    assert elapsed < 10, "the session should end on the stall, not on the 30 s duration"
+    assert link_stalled is not None and link_stalled >= 1.0
+    assert exp.quality_summary is not None
+    qs = exp.quality_summary
+    rows = {r.stream_id: r for r in qs.streams}
+    assert rows["imu_left"].coverage is not None and rows["imu_left"].coverage < 0.8
+    assert rows["imu_left"].outages and rows["imu_left"].outages[-1][1] >= 1.0  # the tail
+    assert any("stream stalled" in w for w in qs.warnings)
+    assert any("data for only" in w for w in qs.warnings)
+    assert rows["imu_left"].effective_rate_hz == 0.0  # stale ⇒ decayed, not a stale 800 Hz
+    assert rows["imu_left"].mean_rate_hz is not None and 700 < rows["imu_left"].mean_rate_hz < 900
+    assert qs.streaming_s is not None and 1.0 < qs.streaming_s < 10
+    evs = read_events(root / "events" / "events.parquet")  # type: ignore[operator]
+    stalls = [e for e in evs if e.kind == "warning" and e.name == "stream_stalled"]
+    assert len(stalls) == 1 and stalls[0].payload["samples"] == 810
+    m = Manifest.load(root / "manifest.json")  # type: ignore[operator]
+    assert m.status == "completed" and any("stalled" in w for w in m.warnings)

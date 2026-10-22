@@ -21,7 +21,7 @@ import os
 import threading
 import time
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -62,6 +62,8 @@ class AriaGen2Source(Source):
         quality_interval_s: Period of the ``health.quality`` snapshot.
         prompt: Shown when the user must act (join the hotspot); blocks until done. Default:
             print and wait for ENTER on the terminal; the dashboard supplies a dialog.
+        on_warning: Receives ``(name, payload)`` for every problem the monitor detects (stall,
+            thermal mitigation, no data) so the experiment can record a ``warning`` event.
     """
 
     def __init__(
@@ -76,6 +78,7 @@ class AriaGen2Source(Source):
         quality_interval_s: float = 10.0,
         no_data_timeout_s: float = 20.0,
         prompt: Callable[[str], None] | None = None,
+        on_warning: Callable[[str, Mapping[str, Any]], None] | None = None,
     ) -> None:
         self.config = config
         self.session_id = session_id
@@ -110,7 +113,13 @@ class AriaGen2Source(Source):
         self._started = False
         self.data_path: str = "none"
         self.stream_source_ip: str | None = None
-        self.warnings: list[str] = list(self.plan.warnings)
+        self.warnings: list[str] = []
+        """Problems met during the session (stall, no data, thermal…); into the manifest."""
+        self.notes: list[str] = list(self.plan.warnings)
+        """Facts worth recording that are not problems (plan rates, control hand-over)."""
+        self.on_warning = on_warning
+        """Called with ``(name, payload)`` for every problem, so the session records an event."""
+        self.stalled_since_ns: int | None = None
         self.vrs_files: list[Path] = []
         self.first_sample_host_ns: int | None = None
         self.link: dict[str, Any] = {}
@@ -383,6 +392,9 @@ class AriaGen2Source(Source):
         next_quality = time.monotonic() + 2.0
         wifi_control_tried = False
         no_data_warned = False
+        thermal_active = False
+        self._stall_total = 0
+        self._stall_changed_at = time.monotonic()
         t_start = time.monotonic()
         while not self._stop.wait(1.0):
             now = time.monotonic()
@@ -400,8 +412,7 @@ class AriaGen2Source(Source):
                             f"plan asked for {self.plan.interface}: the laptop is probably "
                             "not on the hotspot; keep the cable in for this session"
                         )
-                        self.warnings.append(msg)
-                        log.warning("live.data_over_usb", note=msg)
+                        self._warn("data_over_usb", msg)
                 # Control hand-over to Wi-Fi. DeviceClient.connect() holds the interpreter
                 # lock for its whole duration (21 s in run 13) and every SDK callback stalls
                 # meanwhile, so it is done only when needed: when the USB link disappears
@@ -424,19 +435,19 @@ class AriaGen2Source(Source):
                                 "(data may pause while the connection is made)",
                             )
                         if mgr.reconnect_over_ip(self.stream_source_ip):
-                            self.warnings.append(
+                            self.notes.append(
                                 f"control moved to Wi-Fi ({self.stream_source_ip})"
                                 + ("" if not usb_present else "; the USB cable can be unplugged")
                             )
-            if total and self.first_sample_host_ns is None:
-                self.first_sample_host_ns = self.clock.now_ns()
+            if total and self.first_sample_host_ns is None and self._binder is not None:
+                self.first_sample_host_ns = self._binder.first_host_ns or self.clock.now_ns()
             if not total and not no_data_warned and now - t_start > self.no_data_timeout_s:
                 no_data_warned = True
                 msg = (
                     f"no data received {self.no_data_timeout_s:g} s after start_streaming "
                     f"(server connections: {len(conns)})"
                 )
-                self.warnings.append(msg)
+                self._warn("no_data", msg)
                 log.warning(
                     "live.no_data",
                     note=msg,
@@ -446,6 +457,7 @@ class AriaGen2Source(Source):
                     "~/.aria/streaming-certs/persistent fails the TLS handshake silently; "
                     "run `aria_gen2 streaming install-certs`)",
                 )
+            self._check_stall(total, now)
             if conns:  # only while the device is connected (see stop())
                 self._last_ticsync = self._ticsync()
             self.link = {
@@ -456,6 +468,9 @@ class AriaGen2Source(Source):
                 "samples": total,
                 "ticsync": dict(self._last_ticsync),
                 "sdk_queues": self._queue_sizes(),
+                "stalled_s": None
+                if self.stalled_since_ns is None
+                else round((self.clock.now_ns() - self.stalled_since_ns) / 1e9, 1),
             }
             bus.publish("health.link", dict(self.link))
             if now >= next_health:
@@ -463,10 +478,16 @@ class AriaGen2Source(Source):
                 try:
                     health = mgr.get_status()
                     bus.publish("health.device", health)
-                    if health.thermal_mitigation:
-                        log.warning(
-                            "device.thermal_mitigation", skin_temp_c=health.skin_temperature_c
+                    if health.thermal_mitigation and not thermal_active:
+                        thermal_active = True
+                        self._warn(
+                            "thermal_mitigation",
+                            f"thermal mitigation triggered at {health.skin_temperature_c:.1f} °C"
+                            " skin temperature (the glasses stop streaming when it happens)",
+                            skin_temperature_c=health.skin_temperature_c,
                         )
+                    elif not health.thermal_mitigation:
+                        thermal_active = False
                 except DeviceError as exc:
                     log.warning("device.status_failed", error=str(exc))
             if now >= next_quality:
@@ -474,6 +495,44 @@ class AriaGen2Source(Source):
                 q = mgr.quality()
                 if q is not None:
                     bus.publish("health.quality", q)
+
+    def _warn(self, name: str, message: str, **payload: Any) -> None:
+        """Record a problem: the manifest's warnings, the log and (via the hook) an event."""
+        if message not in self.warnings:
+            self.warnings.append(message)
+        log.warning(f"live.{name}", note=message, **payload)
+        if self.on_warning is not None:
+            try:
+                self.on_warning(name, {"message": message, **payload})
+            except Exception:  # the hook must never take the monitor down
+                log.exception("live.on_warning_failed")
+
+    def _check_stall(self, total: int, now: float) -> None:
+        """No sample for ``stall_timeout_s`` after data had flowed ⇒ warn, then stop/continue."""
+        conn = self.config.device.connection
+        if total != self._stall_total:
+            self._stall_total = total
+            self._stall_changed_at = now
+            if self.stalled_since_ns is not None:
+                log.info("live.stream_resumed")
+                self.stalled_since_ns = None
+            return
+        if not total or conn.stall_timeout_s <= 0 or self.stalled_since_ns is not None:
+            return
+        silent = now - self._stall_changed_at
+        if silent < conn.stall_timeout_s:
+            return
+        self.stalled_since_ns = self.clock.now_ns() - int(silent * 1e9)
+        msg = f"stream stalled: no sample for {silent:.0f} s after {total} samples" + (
+            " — the glasses stopped streaming (thermal mitigation ends the streaming "
+            "session; see the device health)"
+            if any("thermal" in w for w in self.warnings)
+            else " (link lost, or the glasses stopped streaming)"
+        )
+        self._warn("stream_stalled", msg, silent_s=round(silent, 1), samples=total)
+        if conn.on_stall == "stop":
+            log.error("live.stopping_on_stall", note="device.connection.on_stall is 'stop'")
+            self.finished.set()
 
     def _usb_link_present(self) -> bool:
         try:

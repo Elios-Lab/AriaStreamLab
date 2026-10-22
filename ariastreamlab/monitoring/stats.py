@@ -15,6 +15,7 @@ This module computes the second kind and the rates; the others are joined in by
 from __future__ import annotations
 
 import threading
+import time
 from collections import deque
 from dataclasses import asdict, dataclass
 from typing import Any
@@ -37,15 +38,23 @@ class StreamStats:
     last_host_ns: int | None
     mean_host_latency_ms: float | None
     """Mean of ``host_receive − device`` after removing the clock offset estimate (live only)."""
+    mean_rate_hz: float | None = None
+    """``(received − 1) / (last − first)`` over the whole stream — the honest average."""
+    outage_s: float = 0.0
+    """Seconds inside the stream's span with no samples (gaps longer than the gap threshold)."""
+    outages: tuple[tuple[float, float], ...] = ()
+    """Up to 50 ``(start seconds since the first sample, length seconds)`` of those gaps."""
 
 
 _MAX_MISSING = 100_000
+_MAX_OUTAGES = 50
 
 
 class _StreamTracker:
     __slots__ = (
         "confirmed_dropped",
         "first_device",
+        "gap_threshold_ns",
         "last_device",
         "last_host",
         "max_device",
@@ -55,6 +64,8 @@ class _StreamTracker:
         "nominal",
         "offset_min",
         "out_of_order",
+        "outage_ns",
+        "outages",
         "window",
         "window_ns",
     )
@@ -73,6 +84,11 @@ class _StreamTracker:
         self.window: deque[int] = deque()
         self.window_ns = int(window_s * 1e9)
         self.offset_min: int | None = None  # min(host - device) ≈ clock offset + min latency
+        # a gap longer than this is an outage, not jitter: 10 periods, at least one second
+        period_ns = 0 if not nominal else 1e9 / nominal
+        self.gap_threshold_ns = int(max(1e9, 10 * period_ns))
+        self.outage_ns = 0
+        self.outages: list[tuple[int, int]] = []  # (start device ns, length ns), capped
 
     @property
     def transport_dropped(self) -> int:
@@ -84,6 +100,11 @@ class _StreamTracker:
             self.first_device = device_ns
         if self.max_device is not None and device_ns < self.max_device:
             self.out_of_order += 1
+        elif self.max_device is not None and device_ns - self.max_device > self.gap_threshold_ns:
+            gap = device_ns - self.max_device
+            self.outage_ns += gap
+            if len(self.outages) < _MAX_OUTAGES:
+                self.outages.append((self.max_device, gap))
         self.max_device = device_ns if self.max_device is None else max(self.max_device, device_ns)
         self.last_device = device_ns
         self.last_host = host_ns
@@ -116,11 +137,24 @@ class _StreamTracker:
         else:
             self.missing.discard(seq)  # a late arrival fills its hole; duplicates are ignored
 
-    def rate(self) -> float | None:
+    def rate(self, now_host_ns: int | None = None) -> float | None:
+        """Rate over the last window of data; ``0.0`` once the stream is stale in host time."""
+        if (
+            now_host_ns is not None
+            and self.last_host is not None
+            and now_host_ns - self.last_host > self.window_ns
+        ):
+            return 0.0
         if len(self.window) < 2:
             return None
         span = max(self.window) - min(self.window)
         return (len(self.window) - 1) / (span / 1e9) if span > 0 else None
+
+    def mean_rate(self) -> float | None:
+        if self.n < 2 or self.first_device is None or self.max_device is None:
+            return None
+        span = self.max_device - self.first_device
+        return (self.n - 1) / (span / 1e9) if span > 0 else None
 
 
 class StatsTracker:
@@ -132,6 +166,9 @@ class StatsTracker:
         self._lock = threading.Lock()
         self._nominal = dict(nominal_rates or {})
         self._window_s = window_s
+        self.paced = False
+        """True for sources paced by the host clock (live, realtime mock, paced replay): then a
+        stream that stopped delivering reports an effective rate of ``0`` after one window."""
         self._trackers: dict[str, _StreamTracker] = {}
         self._latency_sum: dict[str, float] = {}
         self._latency_n: dict[str, int] = {}
@@ -176,10 +213,11 @@ class StatsTracker:
         if t.offset_min is not None and t.last_host is not None and t.last_device is not None:
             # relative latency of the last sample vs the fastest ever seen; clock-offset free
             latency = ((t.last_host - t.last_device) - t.offset_min) / 1e6
+        first = t.first_device or 0
         return StreamStats(
             sid,
             t.n,
-            t.rate(),
+            t.rate(time.monotonic_ns() if self.paced else None),
             t.nominal,
             t.out_of_order,
             t.transport_dropped,
@@ -187,6 +225,9 @@ class StatsTracker:
             t.last_device,
             t.last_host,
             latency,
+            t.mean_rate(),
+            round(t.outage_ns / 1e9, 3),
+            tuple((round((a - first) / 1e9, 3), round(b / 1e9, 3)) for a, b in t.outages),
         )
 
     def as_dict(self) -> dict[str, dict[str, Any]]:

@@ -107,6 +107,7 @@ class Experiment:
         self.store: Session | None = None
         self.health: HealthLog | None = None
         self.rerun: Any = None
+        self._stopped_at_ns: int | None = None
         self.quality_summary: QualitySummary | None = None
         self._opened_at: float | None = None
         self.source: Source | None = None
@@ -233,6 +234,7 @@ class Experiment:
             self.config.experiment.name, self.config.experiment.participant, origin
         )
         self.source = self._build_source()
+        self.stats.paced = self.source.capabilities.is_paced
         self._start_tap()
         raw_to_file: list[str] = []
         raw = RawInfo()
@@ -338,7 +340,12 @@ class Experiment:
             clock=self.clock,
             on_transition=self._on_device_transition,
             prompt=self.prompt,
+            on_warning=self._on_source_warning,
         )
+
+    def _on_source_warning(self, name: str, payload: Mapping[str, Any]) -> None:
+        """A problem detected by the source (stall, thermal…) becomes a ``warning`` event."""
+        self.events.mark(name, payload, kind="warning")
 
     def _on_device_transition(self, t: DeviceTransition) -> None:
         """Device state changes become ``device_state`` events (stored in events.parquet)."""
@@ -398,6 +405,7 @@ class Experiment:
             raise
         finally:
             self.events.mark("acquisition_stop", kind="session")
+            self._stopped_at_ns = self.clock.now_ns()
             self.source.stop()
             if self.graph is not None:
                 self.graph.stop()  # drains what is queued, in topological order
@@ -659,7 +667,9 @@ class Experiment:
         if not dashboard_available():
             self._log.warning(
                 "dashboard.unavailable",
-                note="pip install 'ariastreamlab[dashboard]' to see the live view",
+                note="nicegui is not importable in this environment; reinstall AriaStreamLab "
+                "(pip install -e .) — without the dashboard a stall is only visible in the "
+                "terminal",
             )
             return
         assert self.session is not None
@@ -764,8 +774,18 @@ class Experiment:
         if self.store is not None and self.store.recorder is not None:
             recorder = {k: v.__dict__ for k, v in self.store.recorder.stats().items()}
         warnings: list[str] = []
+        notes: list[str] = []
+        expected: dict[str, float] = {}
+        streaming_s = None
         if self.source is not None:
             warnings.extend(getattr(self.source, "warnings", []) or [])
+            notes.extend(getattr(self.source, "notes", []) or [])
+            plan = getattr(self.source, "plan", None)
+            if plan is not None:
+                expected = dict(getattr(plan, "expected_rates_hz", {}) or {})
+            first = getattr(self.source, "first_sample_host_ns", None)
+            if first is not None and self._stopped_at_ns is not None:
+                streaming_s = round((self._stopped_at_ns - first) / 1e9, 1)
         quality = health.snapshot().get("quality") if health is not None else None
         return build_summary(
             stream_stats=self.stream_stats(),
@@ -786,6 +806,10 @@ class Experiment:
             disk_free_bytes=storage.get("free_bytes"),
             peak_write_rate_bps=None if health is None else round(health.storage_peak_rate_bps),
             extra_warnings=warnings,
+            notes=notes,
+            expected_rates_hz=expected,
+            end_host_ns=self._stopped_at_ns,
+            streaming_s=streaming_s,
         )
 
     @staticmethod
@@ -830,6 +854,9 @@ class Experiment:
             warnings = list(getattr(src, "warnings", []) or [])
             if warnings:
                 extra["warnings"] = warnings
+            notes = list(getattr(src, "notes", []) or [])
+            if notes:
+                extra["notes"] = notes
         if self.graph is not None and len(self.graph):
             extra["pipeline"] = self.graph.stats_dict()
         return extra

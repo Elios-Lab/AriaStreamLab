@@ -247,6 +247,9 @@ class StreamingPlan:
     record_vrs_path: str | None
     server_port: int
     warnings: tuple[str, ...] = ()
+    expected_rates_hz: Mapping[str, float] = field(default_factory=dict)
+    """Rate each live stream should deliver: the measured profile rate where known, else the
+    configured / nominal one. The quality summary judges streams against this."""
 
 
 class DeviceManager(ABC):

@@ -67,15 +67,14 @@ def run_checks(
         ("pyarrow", "pyarrow (Parquet storage)", True),
         ("cv2", "opencv (images, MP4)", True),
         ("pydantic", "pydantic", True),
-        ("nicegui", "nicegui (dashboard, Phase 5)", False),
+        ("nicegui", "nicegui (dashboard)", True),
     ):
         v = _module_version(name)
         out.append(
             Check(
                 label,
                 "ok" if v else ("fail" if required else "warn"),
-                v
-                or ("missing" if required else "missing — pip install 'ariastreamlab[dashboard]'"),
+                v or ("missing — pip install -e . again" if required else "missing"),
             )
         )
     sdk_v = _module_version("aria.sdk_gen2") and _module_version("aria")

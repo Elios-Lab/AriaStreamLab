@@ -45,9 +45,23 @@ class StreamQuality:
     out_of_order: int = 0
     processor_dropped: int = 0
     stored_samples: int | None = None
+    expected_rate_hz: float | None = None
+    """What the stream should deliver (measured profile rate or configured/nominal)."""
+    mean_rate_hz: float | None = None
+    """Received over the stream's own span (first → last sample)."""
+    span_s: float | None = None
+    outage_s: float = 0.0
+    """Seconds without samples inside the span plus the tail after the last sample."""
+    outages: list[list[float]] = field(default_factory=list)
+    """``[start_s, length_s]`` relative to the stream's first sample (tail: length to the end)."""
+    coverage: float | None = None
+    """Fraction of the streaming time with data (1.0 = no outage)."""
+    device_sent: int | None = None
+    """The device's own ``actual`` counter for this sensor (``None`` when unknown/shared)."""
 
     def as_dict(self) -> dict[str, Any]:
-        return dict(self.__dict__)
+        """Plain-data form (lists copied)."""
+        return {k: (list(v) if isinstance(v, list) else v) for k, v in self.__dict__.items()}
 
 
 @dataclass
@@ -63,6 +77,8 @@ class QualitySummary:
     peak_write_rate_bps: float | None = None
     device: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+    streaming_s: float | None = None
 
     def as_dict(self) -> dict[str, Any]:  # noqa: D102
         return {
@@ -71,19 +87,27 @@ class QualitySummary:
             "processors": self.processors,
             "session": {
                 "duration_s": self.duration_s,
+                "streaming_s": self.streaming_s,
                 "disk_bytes": self.disk_bytes,
                 "disk_free_bytes": self.disk_free_bytes,
                 "peak_write_rate_bps": self.peak_write_rate_bps,
                 **self.device,
             },
             "warnings": list(self.warnings),
+            "notes": list(self.notes),
         }
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> QualitySummary:
         """Rebuild from :meth:`as_dict` (e.g. the manifest's ``quality`` section)."""
         session = dict(data.get("session") or {})
-        known = {"duration_s", "disk_bytes", "disk_free_bytes", "peak_write_rate_bps"}
+        known = {
+            "duration_s",
+            "streaming_s",
+            "disk_bytes",
+            "disk_free_bytes",
+            "peak_write_rate_bps",
+        }
         out = cls(
             streams=[
                 StreamQuality(
@@ -99,6 +123,8 @@ class QualitySummary:
             peak_write_rate_bps=session.get("peak_write_rate_bps"),
             device={k: v for k, v in session.items() if k not in known},
             warnings=list(data.get("warnings") or []),
+            notes=list(data.get("notes") or []),
+            streaming_s=session.get("streaming_s"),
         )
         return out
 
@@ -106,12 +132,19 @@ class QualitySummary:
         """The concise, aligned text version (what ``run`` prints at the end)."""
         rows: list[list[str]] = []
         for s in self.streams:
-            eff = "–" if s.effective_rate_hz is None else f"{s.effective_rate_hz:.2f} Hz"
-            nom = "" if s.nominal_rate_hz is None else f" (nominal {s.nominal_rate_hz:g})"
+            rate = s.mean_rate_hz if s.mean_rate_hz is not None else s.effective_rate_hz
+            eff = "–" if rate is None else f"{rate:.2f} Hz"
+            exp = s.expected_rate_hz if s.expected_rate_hz is not None else s.nominal_rate_hz
+            nom = "" if exp is None else f" (expected {exp:g})"
             dev = (
                 "–"
                 if s.device_dropped is None
                 else f"{s.device_dropped}{' (shared)' if s.device_shared else ''}"
+            )
+            cov = (
+                ""
+                if s.coverage is None or s.coverage >= 0.995
+                else f"   coverage {s.coverage:.0%} ({s.outage_s:.0f} s missing)"
             )
             rows.append(
                 [
@@ -120,7 +153,7 @@ class QualitySummary:
                     f"device-dropped {dev}" if s.kind == "raw" else "",
                     f"transport-dropped {s.transport_dropped}" if s.kind == "raw" else "",
                     f"processor-dropped {s.processor_dropped}",
-                    f"effective {eff}{nom}",
+                    f"mean {eff}{nom}{cov}",
                 ]
             )
         widths = [max((len(r[i]) for r in rows), default=0) for i in range(6)]
@@ -146,6 +179,8 @@ class QualitySummary:
                 parts.append(f"{pid} {p.get('fired', 0)}→{p.get('outputs', 0)}{extra}")
             lines.append("processors   " + "; ".join(parts))
         dur = "–" if self.duration_s is None else f"{self.duration_s:.1f} s"
+        if self.streaming_s is not None and self.duration_s is not None:
+            dur += f" (streaming {self.streaming_s:.1f} s)"
         disk = format_bytes(self.disk_bytes)
         free = (
             "" if self.disk_free_bytes is None else f" (free {format_bytes(self.disk_free_bytes)})"
@@ -166,6 +201,9 @@ class QualitySummary:
             f"session      duration {dur}   disk {disk}{free}{dev}   warnings: {len(self.warnings)}"
         )
         lines.extend(f"  - {w}" for w in self.warnings)
+        if self.notes:
+            lines.append(f"notes: {len(self.notes)}")
+            lines.extend(f"  · {n}" for n in self.notes)
         return "\n".join(lines)
 
 
@@ -183,6 +221,10 @@ def build_summary(
     disk_free_bytes: int | None = None,
     peak_write_rate_bps: float | None = None,
     extra_warnings: list[str] | None = None,
+    notes: list[str] | None = None,
+    expected_rates_hz: Mapping[str, float] | None = None,
+    end_host_ns: int | None = None,
+    streaming_s: float | None = None,
 ) -> QualitySummary:
     """Put the per-stream counters, the device's own statistics and the health history together.
 
@@ -200,26 +242,38 @@ def build_summary(
         disk_free_bytes: Free space on the disk holding it.
         peak_write_rate_bps: Highest write rate seen by the health log.
         extra_warnings: Warnings collected elsewhere (source, recorder) to repeat here.
+        notes: Facts that are not problems (plan rates, control hand-over), listed apart.
+        expected_rates_hz: Per-stream rate to judge against (the live plan's); nominal otherwise.
+        end_host_ns: Host time when acquisition stopped — a stream whose last sample is much
+            older than this has a tail outage (it stalled before the end).
+        streaming_s: Seconds between the first sample and the stop (the data span of the
+            session, as opposed to ``duration_s`` which includes connecting).
     """
     summary = QualitySummary(
         duration_s=duration_s,
         disk_bytes=disk_bytes,
         disk_free_bytes=disk_free_bytes,
         peak_write_rate_bps=peak_write_rate_bps,
+        streaming_s=streaming_s,
+        notes=list(notes or []),
     )
+    expected = dict(expected_rates_hz or {})
     raw_ids = set(raw_stream_ids)
     # device-side counters, attributed to our stream ids
-    device_rows: dict[str, tuple[int | None, int | None, bool]] = {}
+    device_rows: dict[str, tuple[int | None, int | None, bool, int | None]] = {}
     for sensor in (device_quality or {}).get("sensors", []) or []:
         streams = list(sensor.get("streams") or [])
         for sid in streams:
             prev = device_rows.get(sid)
             dropped = sensor.get("dropped")
-            expected = sensor.get("expected")
+            dev_expected = sensor.get("expected")
+            actual = sensor.get("actual")
             if prev is not None:
                 dropped = _add(prev[0], dropped)
-                expected = _add(prev[1], expected)
-            device_rows[sid] = (dropped, expected, len(streams) > 1 or prev is not None)
+                dev_expected = _add(prev[1], dev_expected)
+                actual = _add(prev[3], actual)
+            shared = len(streams) > 1 or prev is not None
+            device_rows[sid] = (dropped, dev_expected, shared, None if shared else actual)
     # processor queue drops per input stream
     proc_dropped: dict[str, int] = {}
     for p in (processor_stats or {}).values():
@@ -230,6 +284,17 @@ def build_summary(
         g = _getter(st)
         dev = device_rows.get(sid)
         rec = (recorder_stats or {}).get(sid)
+        first, last = g("first_device_ns"), g("last_device_ns")
+        span = None if first is None or last is None else (last - first) / 1e9
+        outages = [list(o) for o in (g("outages") or ())]
+        outage_s = float(g("outage_s") or 0.0)
+        last_host = g("last_host_ns")
+        if end_host_ns is not None and last_host is not None and span is not None:
+            tail = (end_host_ns - last_host) / 1e9
+            if tail > max(1.0, 10 / float(g("nominal_rate_hz") or 1.0)):
+                outages.append([round(span, 3), round(tail, 3)])
+                outage_s += tail
+                span += tail  # the stream's time extends to the stop, with no data in the tail
         row = StreamQuality(
             stream_id=sid,
             kind="raw" if sid in raw_ids else "derived",
@@ -243,6 +308,13 @@ def build_summary(
             out_of_order=int(g("out_of_order") or 0),
             processor_dropped=proc_dropped.get(sid, 0),
             stored_samples=None if rec is None else _getter(rec)("samples"),
+            expected_rate_hz=expected.get(sid, g("nominal_rate_hz")),
+            mean_rate_hz=g("mean_rate_hz"),
+            span_s=None if span is None else round(span, 1),
+            outage_s=round(outage_s, 1),
+            outages=outages,
+            coverage=None if not span else round(max(0.0, 1 - outage_s / span), 3),
+            device_sent=None if dev is None else dev[3],
         )
         summary.streams.append(row)
     summary.streams.sort(key=lambda r: (r.kind != "raw", r.stream_id))
@@ -295,8 +367,13 @@ def build_summary(
             )
         if batt and batt[-1] <= 15:
             summary.warnings.append(f"battery at {batt[-1]} % at the end")
-        if any(h.get("wifi_connected") is False for h in hist[1:]):
-            summary.warnings.append("wifi reported disconnected during the session")
+        was_connected = False
+        for h in hist:
+            if h.get("wifi_connected") is True:
+                was_connected = True
+            elif was_connected and h.get("wifi_connected") is False:
+                summary.warnings.append("wifi reported disconnected during the session")
+                break
 
     # stream-level warnings
     for row in summary.streams:
@@ -316,16 +393,40 @@ def build_summary(
             summary.warnings.append(
                 f"{row.stream_id}: {row.processor_dropped} samples dropped at processor queues"
             )
+        if row.coverage is not None and row.coverage < 0.95 and row.outages:
+            start, length = row.outages[0]
+            summary.warnings.append(
+                f"{row.stream_id}: data for only {row.coverage:.0%} of the time —"
+                f" {len(row.outages)} outage(s), the first at {start:.0f} s lasting {length:.0f} s"
+                + (
+                    " (until the stop)"
+                    if row.outages[-1][0] + row.outages[-1][1] >= (row.span_s or 0) - 0.5
+                    else ""
+                )
+            )
         if (
             row.kind == "raw"
-            and row.nominal_rate_hz
-            and row.effective_rate_hz is not None
+            and row.device_sent is not None
+            and row.received
+            and row.device_sent - row.received > max(10, 0.01 * row.device_sent)
+        ):
+            missing = row.device_sent - row.received
+            summary.warnings.append(
+                f"{row.stream_id}: the device counted {row.device_sent} samples, the host"
+                f" received {row.received} ({missing} missing, {missing / row.device_sent:.1%})"
+            )
+        if (
+            row.kind == "raw"
+            and row.expected_rate_hz
+            and row.mean_rate_hz is not None
             and row.received > 10
-            and row.effective_rate_hz < 0.8 * row.nominal_rate_hz
+            and row.coverage is not None
+            and row.coverage >= 0.95
+            and row.mean_rate_hz < 0.8 * row.expected_rate_hz
         ):
             summary.warnings.append(
-                f"{row.stream_id}: effective {row.effective_rate_hz:.1f} Hz is below"
-                f" 80 % of nominal {row.nominal_rate_hz:g} Hz"
+                f"{row.stream_id}: mean {row.mean_rate_hz:.1f} Hz is below"
+                f" 80 % of the expected {row.expected_rate_hz:g} Hz"
             )
     for name, q in summary.app_queues.items():
         if q["dropped"]:

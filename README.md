@@ -87,8 +87,9 @@ anywhere.
    network name and password and waits for you to join it from the laptop (`"hotspot":
    {"auto_join": true}` lets macOS do it). Keep the cable in for the first run; it can be
    unplugged once data flows — control moves to Wi-Fi by itself. Wireless sessions warm the
-   glasses (≈ +7 °C in two minutes; throttling starts at 42 °C skin temperature), so keep them
-   short or tether for long recordings.
+   glasses, and at 42 °C skin temperature they stop streaming on their own (reached in 9½
+   minutes while charging over USB): do not charge during a wireless session, watch the
+   temperature on the dashboard, or stream over USB for long recordings.
 4. **Describe the experiment.** The smallest useful file:
 
    ```json
@@ -195,13 +196,23 @@ write rate. Every session ends with a summary, printed by `run`, shown by `inspe
 as `manifest.quality` and as `quality/summary.{json,txt}`:
 
 ```
-rgb        received 5988   device-dropped 3   transport-dropped 9   processor-dropped 0   effective 9.98 Hz (nominal 10)
-imu_left   received 479400 device-dropped 0   transport-dropped 0   processor-dropped 0   effective 799.0 Hz (nominal 800)
+rgb        received 2768    device-dropped 0   transport-dropped 0   processor-dropped 0   mean 4.90 Hz (expected 5)     coverage 46% (642 s missing)
+imu_left   received 445410  device-dropped 0   transport-dropped 0   processor-dropped 0   mean 789.7 Hz (expected 800)  coverage 47% (630 s missing)
 app queues   no drops
-processors   gaze_on_rgb 5900→5900 p95 0.5 ms
-session      duration 600.2 s   disk 1.84 GB (free 120 GB)   battery 90→60 %   skin temp max 38.1 °C   warnings: 1
-  - rgb: 9 samples lost in transport
+processors   gaze_on_rgb 2768→2768 p95 0.06 ms
+session      duration 1275.6 s (streaming 1200.0 s)   disk 944.77 MB (free 1.09 TB)   skin temp max 42.2 °C   warnings: 4
+  - thermal mitigation active from 640 s (2 of 235 snapshots)
+  - stream stalled: no sample for 30 s after 445410 samples — the glasses stopped streaming
+  - imu_left: data for only 47% of the time — 1 outage(s), the first at 564 s lasting 630 s (until the stop)
+  - rgb: the device counted 2819 samples, the host received 2768 (51 missing, 1.8%)
+notes: 1
+  · control moved to Wi-Fi (192.168.101.211)
 ```
+
+(That is the real summary of the 20-minute validation session, after the fixes it prompted:
+the glasses reached 42 °C while charging over USB, ended the stream themselves at 640 s, and
+the framework now says so instead of reporting a stale 800 Hz for the remaining ten minutes.
+See the architecture document, §0.13.)
 
 ## Dashboard and designer
 

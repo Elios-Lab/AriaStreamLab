@@ -1,7 +1,7 @@
 # The dashboard and the experiment designer
 
 `ariastreamlab run` and `ariastreamlab replay` serve a browser dashboard while the
-session runs (NiceGUI; `pip install 'ariastreamlab[dashboard]'`, already part of `[dev]`). Its
+session runs (NiceGUI, installed with AriaStreamLab). Its
 job is to let you verify that acquisition is working *while the participant is still
 wearing the glasses* — that every stream flows at the expected rate, that nothing is being
 dropped and where, that the gaze projection lands where it should, that the device is not
@@ -25,8 +25,8 @@ ARIASTREAMLAB_DASHBOARD=0 ariastreamlab replay … --speed 0      # a whole shel
 | images | every image stream in `dashboard.show` (default: all enabled), downscaled to 640 px at `dashboard.image_fps`; a circle marks each derived gaze point (`gaze.project_to_rgb` output) on the RGB frame | `raw.rgb`, `raw.et_*`, `raw.slam_*`, `derived.*` |
 | Signals | any scalar channel, chosen in the multi-select: IMU axes, gaze yaw/pitch/depth, barometer, magnetometer, hand confidences, audio level (dBFS), every numeric field of a processor's output; a window slider (2–60 s); channels are thinned to 100 Hz for display and keep the last 60 s | `raw.*`, `derived.*` |
 | Device | battery, charging, skin temperature, thermal mitigation, Wi-Fi (live sessions) | `health.device` |
-| Link | connections, data path (`usb` / `wifi`), SDK queue depths, TicSync (live); origin and sample count otherwise; app-queue drops per bus subscriber; session size on disk, write rate, free disk | `health.link`, `health.storage`, bus stats |
-| Streams | received / effective Hz / nominal Hz / out-of-order / transport drops per stream | `StatsTracker` |
+| Link | connections, data path (`usb` / `wifi`), SDK queue depths, TicSync, seconds since the last sample when the stream has stalled (live); origin and sample count otherwise; app-queue drops per bus subscriber; session size on disk, write rate, free disk | `health.link`, `health.storage`, bus stats |
+| Streams | received / effective Hz (over the last 5 s; falls to 0 when a stream stops) / nominal Hz / out-of-order / transport drops per stream | `StatsTracker` |
 | Pipeline | per processor: fired, outputs, exec ms, latency ms, queue drops, errors | `ProcessingGraph.stats()` |
 | Device quality | the device's own per-sensor counters (live, every 10 s) | `health.quality` |
 | Trajectory | x/y of every pose stream (`vio`…) over the last 120 s, odometry frame, with the current position marked | `raw.vio` |

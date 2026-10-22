@@ -209,6 +209,22 @@ Verified facts added by these runs: the hotspot's control address is stable (`19
 
 ---
 
+### 0.13 Hardware run 15 (2026‑10‑22 14:30 CEST): the 20‑minute validation session — **the glasses stop streaming at 42 °C**
+
+`ariastreamlab run examples/eye_gaze.json --duration 1200` on the Mac, tethered over USB (charging), data over the hotspot, control handed to Wi‑Fi at start (`192.168.101.211`), no dashboard (the `aria` environment had no NiceGUI — see the consequence below).
+
+| Observation | Value |
+|---|---|
+| Streaming started | 12:31:14 UTC, 75 s after `open()` (connect + hotspot prompt) |
+| Data quality while it flowed | **0 device drops, 0 transport drops, 0 app‑queue drops, 0 processor drops**; IMU 798.9/797.1 Hz, RGB 5.0 Hz, eye gaze **30.0 Hz** (not 25 — the 25 Hz of runs 8–14 was a start‑up transient of those 20‑s sessions); gaze projection 0.05 ms p95 |
+| Skin temperature | 29.1 °C → 42.2 °C in 9 min 26 s while charging; thermal mitigation at 12:40:40 (t = 640 s) |
+| What mitigation does | **the device ends the streaming session itself**: its quality counters freeze (2 819 RGB / 450 509 IMU), the temperature falls back to 31.9 °C (sensors off), the last derived chunk is at 12:41, and the final `stop_streaming` fails with "No active session to stop" |
+| What the framework did | kept running for 10 min 34 s receiving nothing; printed "798.9 Hz" the whole time because the effective rate was computed over the last 5 s *of data*; counted 445 410 IMU samples (46 % of 20 min) with every drop counter at zero |
+| Device vs host | the device counted 2 819 RGB frames and 450 509 IMU samples; the host received 2 768 and 445 410 (−1.8 % / −1.1 %) with no sequence gaps — most plausibly the batches in flight when the device stopped; not resolved |
+| `wifi_connected` | `false` for the whole session: the field describes the glasses as a Wi‑Fi *station*, and in hotspot mode they are the access point |
+
+Consequences (release 0.1.1): stall detection in the adapter (`device.connection.stall_timeout_s`, default 30 s; `on_stall: stop | continue`, default `stop`: a `warning` event, then the session ends cleanly with the manifest and summary written); effective rates decay to 0 after one window without data on paced sources; the quality summary reports per‑stream *coverage* and outages (interior gaps from the device timestamps, the tail from the host clock), the device's own `actual` counter against what the host received, streaming time apart from session time, and judges rates against the live plan's expected rate (profile9 RGB = 5 Hz) rather than the nominal one; `wifi_connected` warns only on a true→false transition; "control moved to Wi‑Fi" and the plan's rate notes are *notes*, not warnings; "No active session to stop" is "already stopped", not an error; NiceGUI is a core dependency; `PROFILE9_MEASURED_RATES_HZ` keeps only RGB. Practical rule for wireless sessions: **do not charge while streaming over the hotspot** (the charger adds the heat that reaches 42 °C in ten minutes), or stream over USB; the dashboard's Device card shows the temperature climbing.
+
 ## 1. Architecture
 
 ### 1.1 Layers and the core invariant
@@ -656,7 +672,7 @@ The same `Experiment` drives all three, and processors see only `Sample` objects
 | core (required) | `pydantic>=2`, `numpy`, `pyarrow`, `structlog`, `typer`, `rich` | ~ what a Python research environment already has |
 | aria (extra `[aria]`) | `projectaria-client-sdk~=2.5`, `projectaria-tools~=2.3` | pulls `rerun-sdk 0.33`, `projectaria-login`, `pandas`, `scipy`, `pillow` transitively (Meta's pins) |
 | vision (required) | `opencv-python-headless` | video writer, resize, undistort; not a dependency of the SDK |
-| dashboard (extra `[dashboard]`, on by default in docs) | `nicegui` | FastAPI/uvicorn included |
+| dashboard (core since 0.1.1 — run 15 showed what running blind costs) | `nicegui` | FastAPI/uvicorn included |
 | optional | `zarr`, `scipy` (interp/filters), `rerun-sdk` | |
 | dev | `pytest`, `pytest-timeout`, `ruff`, `mypy`, `import-linter`, `pre-commit` | |
 
@@ -681,7 +697,7 @@ NiceGUI covers every required panel with Python only; Rerun stays an optional si
 
 ## 11. Monitoring and quality summary
 
-**As implemented (Phase 6).** `monitoring/health.py` (`HealthLog`): a bus subscriber for `health.device|link|quality|pipeline` that keeps the latest payload of each, appends the device and quality snapshots to `quality/device_health.jsonl` and `quality/device_quality_stats.jsonl` as they arrive (a crash keeps the history), and publishes `health.storage` every 5 s (session directory size, write rate, free disk). `monitoring/quality.py` (`build_summary` → `QualitySummary`): per stream *received / device‑dropped (from the device's counters, flagged "shared" where one sensor counter covers two streams — IMU_1/IMU_2) / transport‑dropped / processor‑dropped (per‑input queue drops of the graph) / effective vs nominal rate*; app‑queue drops per bus subscriber (they are pattern subscriptions, so not attributable per stream); per‑processor fired/outputs/errors/p95; session duration, disk usage (measured after the recorder flushed), free disk, peak write rate, battery start→end, max skin temperature; warnings (thermal mitigation with its onset time, temperature ≥ 40 °C, battery ≤ 15 %, Wi‑Fi dropouts, streams with no samples, any drops, effective < 80 % of nominal, processor errors, < 2 GB free, plus the source's own warnings). Written to `quality/summary.json` + `summary.txt`, stored as `manifest.quality`, printed by `run`, shown by `inspect`; `QualitySummary.from_dict` rebuilds it from a manifest. The dashboard shows the live counterparts (app queues and storage on the Link card; audio level and the VIO trajectory were added at the same time).
+**As implemented (Phase 6, revised after run 15 — §0.13).** `monitoring/health.py` (`HealthLog`): a bus subscriber for `health.device|link|quality|pipeline` that keeps the latest payload of each, appends the device and quality snapshots to `quality/device_health.jsonl` and `quality/device_quality_stats.jsonl` as they arrive (a crash keeps the history), and publishes `health.storage` every 5 s (session directory size, write rate, free disk). `monitoring/quality.py` (`build_summary` → `QualitySummary`): per stream *received / device‑dropped (from the device's counters, flagged "shared" where one sensor counter covers two streams — IMU_1/IMU_2) / transport‑dropped / processor‑dropped (per‑input queue drops of the graph) / effective vs nominal rate*; app‑queue drops per bus subscriber (they are pattern subscriptions, so not attributable per stream); per‑processor fired/outputs/errors/p95; session duration, disk usage (measured after the recorder flushed), free disk, peak write rate, battery start→end, max skin temperature; warnings (thermal mitigation with its onset time, temperature ≥ 40 °C, battery ≤ 15 %, Wi‑Fi dropouts, streams with no samples, any drops, effective < 80 % of nominal, processor errors, < 2 GB free, plus the source's own warnings). Written to `quality/summary.json` + `summary.txt`, stored as `manifest.quality`, printed by `run`, shown by `inspect`; `QualitySummary.from_dict` rebuilds it from a manifest. The dashboard shows the live counterparts (app queues and storage on the Link card; audio level and the VIO trajectory were added at the same time).
 
 `monitoring.stats` keeps per stream: received, effective rate (sliding 5 s), out‑of‑order, bus drops (per subscriber), SDK‑queue size (from `get_*_queue_size`, polled), device‑side drops (parsed from `get_data_quality_stats()` every 10 s **[A‑5]**), transport drops (gaps in `frame_number` / expected‑vs‑received at nominal rate). The dashboard shows four separate counters per stream: **device**, **transport**, **app queue**, **processor**. `quality/summary.json` at the end:
 

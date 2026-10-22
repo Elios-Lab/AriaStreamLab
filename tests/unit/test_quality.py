@@ -24,9 +24,12 @@ def _stats(
         out_of_order=kw.get("out_of_order", 0),
         transport_dropped=kw.get("transport_dropped", 0),
         first_device_ns=0,
-        last_device_ns=10_000_000_000,
-        last_host_ns=None,
+        last_device_ns=kw.get("last_device_ns", 10_000_000_000),
+        last_host_ns=kw.get("last_host_ns"),
         mean_host_latency_ms=None,
+        mean_rate_hz=kw.get("mean_rate_hz", effective),
+        outage_s=kw.get("outage_s", 0.0),
+        outages=kw.get("outages", ()),
     )
 
 
@@ -117,16 +120,14 @@ def test_build_summary_puts_the_four_kinds_of_loss_side_by_side() -> None:
     assert "imu_left: 3 samples dropped on the device (counter shared" in w
     assert "rgb: 9 samples lost in transport" in w
     assert "rgb: 40 samples dropped at processor queues" in w
-    assert "eye_gaze: effective 20.0 Hz is below 80 % of nominal 30 Hz" in w
+    assert "eye_gaze: mean 20.0 Hz is below 80 % of the expected 30 Hz" in w
     assert "app queue 'dash:raw' dropped 12 items" in w
     assert "processor 'gaze_on_rgb' raised 2 error(s)" in w
     assert "only 1.00 GB free" in w
     assert "source: wifi rssi low" in w
 
     text = summary.text()
-    assert (
-        "rgb " in text and "device-dropped 3 " in text and "effective 9.98 Hz (nominal 10)" in text
-    )
+    assert "rgb " in text and "device-dropped 3 " in text and "mean 9.98 Hz (expected 10)" in text
     assert "imu_left" in text and "device-dropped 3 (shared)" in text
     assert "app queues   dash:raw dropped 12" in text
     assert "gaze_on_rgb 5900→5900 errors 2 p95 0.50 ms" in text
@@ -229,3 +230,120 @@ def test_mock_session_writes_quality_summary(tmp_path: Path) -> None:
     loaded = json.loads((root / "quality" / "summary.json").read_text())
     assert QualitySummary.from_dict(loaded).text() == qs.text()
     assert exp.summary()["quality"]["warnings"] == qs.warnings
+
+
+def test_summary_coverage_device_counts_and_triage() -> None:
+    """Hardware run 15: the glasses stopped streaming after 640 s; the summary must say so."""
+    # 9.4 min of data at 800 Hz, then nothing until the stop 630 s later (host time)
+    summary = build_summary(
+        stream_stats={
+            "imu_left": _stats(
+                "imu_left",
+                445_410,
+                800,
+                798.9,  # the stale window rate — not what the summary should print
+                last_device_ns=564_000_000_000,
+                last_host_ns=1_000_000_000_000,
+                mean_rate_hz=789.7,
+            ),
+            "rgb": _stats(
+                "rgb",
+                2768,
+                10,
+                5.0,
+                last_device_ns=564_000_000_000,
+                last_host_ns=1_000_000_000_000,
+                mean_rate_hz=4.9,
+                outage_s=12.0,
+                outages=((100.0, 12.0),),
+            ),
+        },
+        raw_stream_ids={"imu_left", "rgb"},
+        device_quality={
+            "sensors": [
+                {"sensor_type": "CAMERA_POV", "streams": ["rgb"], "dropped": 0, "actual": 2819},
+                {
+                    "sensor_type": "IMU_1",
+                    "streams": ["imu_left", "imu_right"],
+                    "dropped": 0,
+                    "actual": 1,
+                },
+            ]
+        },
+        device_history=[  # the glasses are the access point: wifi_connected is always False
+            {
+                "t_s": 76,
+                "skin_temperature_c": 29.1,
+                "thermal_mitigation": False,
+                "wifi_connected": False,
+            },
+            {
+                "t_s": 640,
+                "skin_temperature_c": 42.2,
+                "thermal_mitigation": True,
+                "wifi_connected": False,
+            },
+            {
+                "t_s": 1270,
+                "skin_temperature_c": 31.9,
+                "thermal_mitigation": False,
+                "wifi_connected": False,
+            },
+        ],
+        duration_s=1275.6,
+        streaming_s=1200.0,
+        expected_rates_hz={"rgb": 5.0, "imu_left": 800.0},
+        end_host_ns=1_000_000_000_000 + 630_000_000_000,
+        extra_warnings=["stream stalled: no sample for 30 s after 445410 samples"],
+        notes=["control moved to Wi-Fi (192.168.101.211)"],
+    )
+    rows = {r.stream_id: r for r in summary.streams}
+    imu = rows["imu_left"]
+    assert imu.span_s == 564.0 + 630.0 and imu.outage_s == 630.0
+    assert imu.outages == [[564.0, 630.0]] and imu.coverage == round(564 / 1194, 3)
+    assert imu.device_sent is None  # the IMU counter is shared between the two IMUs
+    rgb = rows["rgb"]
+    assert rgb.outages == [[100.0, 12.0], [564.0, 630.0]] and rgb.outage_s == 642.0
+    assert rgb.device_sent == 2819 and rgb.expected_rate_hz == 5.0
+    w = "\n".join(summary.warnings)
+    assert (
+        "imu_left: data for only 47% of the time — 1 outage(s), the first at 564 s lasting 630 s (until the stop)"
+        in w
+    )
+    assert (
+        "rgb: data for only 46% of the time — 2 outage(s), the first at 100 s lasting 12 s (until the stop)"
+        in w
+    )
+    assert "rgb: the device counted 2819 samples, the host received 2768 (51 missing, 1.8%)" in w
+    assert "thermal mitigation active from 640 s" in w
+    assert "wifi reported disconnected" not in w  # never connected as a station: no warning
+    assert "below 80 %" not in w  # RGB at 5 Hz is what profile9 delivers: expected, not a problem
+    assert "stream stalled" in w
+    assert summary.notes == ["control moved to Wi-Fi (192.168.101.211)"]
+    text = summary.text()
+    assert "mean 4.90 Hz (expected 5)" in text and "coverage 46% (642 s missing)" in text
+    assert "duration 1275.6 s (streaming 1200.0 s)" in text
+    assert "notes: 1" in text and "· control moved to Wi-Fi" in text
+    assert QualitySummary.from_dict(summary.as_dict()).text() == text
+
+
+def test_stats_tracker_outages_and_stale_rate(make_sample) -> None:
+    from ariastreamlab.monitoring.stats import StatsTracker
+
+    tracker = StatsTracker({"imu_left": 800.0})
+    period = 1_250_000
+    t = 0
+    for i in range(400):  # 0.5 s of data
+        tracker.observe(make_sample(device_ns=t, host_ns=t, seq=i))
+        t += period
+    t += 3_000_000_000  # a three-second hole
+    for i in range(400, 800):
+        tracker.observe(make_sample(device_ns=t, host_ns=t, seq=i))
+        t += period
+    s = tracker.snapshot("imu_left")
+    assert s is not None
+    assert s.outage_s == 3.001 and s.outages == ((0.499, 3.001),)  # the gap includes a period
+    assert s.mean_rate_hz is not None and 190 < s.mean_rate_hz < 210  # 799 samples over 4 s
+    assert s.effective_rate_hz is not None and 190 < s.effective_rate_hz < 210  # 5 s window
+    tracker.paced = True  # live: the host clock is far ahead of the last sample ⇒ stale ⇒ 0
+    assert tracker.snapshot("imu_left").effective_rate_hz == 0.0  # type: ignore[union-attr]

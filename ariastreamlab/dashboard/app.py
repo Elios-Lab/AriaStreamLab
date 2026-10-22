@@ -667,6 +667,11 @@ def _build_index(dash: Dashboard, ui: Any) -> None:
                 f"connections {link.get('connections')} · samples {link.get('samples')}  \n"
                 f"TicSync {'valid' if ts.get('valid') else 'not valid'}  \n"
                 f"SDK queues {link.get('sdk_queues') or {}}"
+                + (
+                    f"  \n**⚠ stream stalled: no sample for {link['stalled_s']:.0f} s**"
+                    if link.get("stalled_s") is not None
+                    else ""
+                )
             )
         else:
             link_md.content = (
