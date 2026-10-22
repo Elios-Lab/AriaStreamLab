@@ -125,7 +125,8 @@ def _model_form(
 
 def build_design_page(dash: Any, ui: Any) -> None:
     """Render the designer page for ``dash.designer``."""
-    ui.colors(primary="#5b8def")
+    from ariastreamlab.dashboard.app import nav_header
+
     designer: Designer = dash.designer
     rev = {"shown": -1, "current": 0}
 
@@ -133,37 +134,32 @@ def build_design_page(dash: Any, ui: Any) -> None:
         rev["current"] += 1
 
     # ---- header ----------------------------------------------------------------------
-    with ui.header().classes("items-center justify-between px-4"):
-        with ui.row().classes("items-center gap-4"):
-            ui.label("AriaStreamLab").classes("text-xl font-bold")
-            ui.label("experiment designer").classes("text-sm opacity-80")
-        with ui.row().classes("items-center gap-2"):
-            preset = ui.select(list(Designer.presets()), value="base", label="preset").classes(
-                "w-[200px]"
-            )
+    with nav_header(ui, "design"), ui.row().classes("items-center gap-2"):
+        preset = ui.select(list(Designer.presets()), value="base", label="preset").classes(
+            "w-[200px]"
+        )
 
-            def _start() -> None:
-                dash.designer = Designer.from_preset(str(preset.value), base_dir=designer.base_dir)
-                ui.navigate.to("/design")
+        def _start() -> None:
+            dash.designer = Designer.from_preset(str(preset.value), base_dir=designer.base_dir)
+            ui.navigate.to("/design")
 
-            ui.button("start from preset", on_click=_start).props("flat color=white")
-            load_path = ui.input("load file", placeholder="path/to/experiment.json").classes(
-                "w-[260px]"
-            )
+        ui.button("start from preset", on_click=_start).props("flat color=white")
+        load_path = ui.input("load file", placeholder="path/to/experiment.json").classes(
+            "w-[260px]"
+        )
 
-            def _load() -> None:
-                p = Path(str(load_path.value or "")).expanduser()
-                if not p.is_absolute():
-                    p = designer.base_dir / p
-                try:
-                    dash.designer = Designer.from_file(p)
-                except Exception as exc:
-                    ui.notify(f"cannot load {p}: {exc}", type="negative")
-                    return
-                ui.navigate.to("/design")
+        def _load() -> None:
+            p = Path(str(load_path.value or "")).expanduser()
+            if not p.is_absolute():
+                p = designer.base_dir / p
+            try:
+                dash.designer = Designer.from_file(p)
+            except Exception as exc:
+                ui.notify(f"cannot load {p}: {exc}", type="negative")
+                return
+            ui.navigate.to("/design")
 
-            ui.button("load", on_click=_load).props("flat color=white")
-            ui.link("monitor", "/").classes("text-white")
+        ui.button("load", on_click=_load).props("flat color=white")
 
     doc = designer.doc
     with ui.row().classes("w-full px-2 gap-2 items-start flex-nowrap"):
@@ -555,7 +551,7 @@ def build_design_page(dash: Any, ui: Any) -> None:
             run_btn.enable()
             stop_btn.disable()
         else:
-            link = " — [open the monitor](/)" if rs.get("running") else ""
+            link = " — [open the monitor](/monitor)" if rs.get("running") else ""
             err = f"\n\n**error:** {rs['error']}" if rs.get("error") else ""
             run_status.content = (
                 f"**{rs['state']}** · {rs['experiment']} · {rs['origin']}{link}{err}"

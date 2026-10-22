@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.0 — 2026-10-22
+
+The application window. `ariastreamlab` with no arguments opens a desktop window (pywebview:
+WebKit on macOS, WebView2 on Windows, GTK/Qt on Linux) with Home, Design, Monitor and
+Sessions pages; `ariastreamlab app --browser` serves the same application to a browser.
+
+- Home page; Sessions page (list the recordings under `storage.root`, manifest facts,
+  quality summary, events and intervals, replay at a chosen speed, open the folder).
+- The monitor moved from `/` to `/monitor`; every page shares one navigation header.
+- `dashboard.native` lets `run` and `replay` open a window instead of a browser tab.
+- `api.serve_app`, `api.launch_replay`; pywebview is a core dependency, with a browser
+  fallback when no WebView is available.
+
 ## 0.1.1 — 2026-10-22
 
 Lessons of the 20-minute validation session (hardware run 15, architecture §0.13): the

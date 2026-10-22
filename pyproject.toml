@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ariastreamlab"
-version = "0.1.1"
+version = "0.2.0"
 description = "Experiment-oriented framework for Meta Project Aria Gen 2 glasses: acquisition, realtime processing, storage, replay and monitoring."
 readme = "README.md"
 license = "MIT"
@@ -34,6 +34,9 @@ dependencies = [
   # the dashboard is how a researcher sees a stall or a thermal shutdown while it happens
   # (hardware run 15 ran blind without it), so it is not optional
   "nicegui>=2.0",
+  # the desktop window of the `ariastreamlab` app (system WebKit on macOS, WebView2 on
+  # Windows; on Linux it needs GTK WebKit2 or Qt — see the README)
+  "pywebview>=5.0",
 ]
 
 [project.optional-dependencies]

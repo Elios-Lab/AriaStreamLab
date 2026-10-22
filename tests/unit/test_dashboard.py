@@ -8,6 +8,7 @@ import os
 import threading
 import time
 import urllib.request
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -182,8 +183,9 @@ def test_dashboard_server_serves_page_and_state(tmp_path, monkeypatch) -> None:
         time.sleep(1.5)
         html = urllib.request.urlopen(exp.dashboard_url, timeout=5).read().decode()
         assert "AriaStreamLab" in html
-        design = urllib.request.urlopen(exp.dashboard_url + "design", timeout=5).read().decode()
-        assert "experiment designer" in design
+        for page in ("monitor", "design", "sessions"):
+            body = urllib.request.urlopen(exp.dashboard_url + page, timeout=5).read().decode()
+            assert "AriaStreamLab" in body, page
         state = json.loads(
             urllib.request.urlopen(exp.dashboard_url + "api/state", timeout=5).read()
         )
@@ -282,3 +284,49 @@ def test_rerun_sink_logs_to_a_memory_recording(monkeypatch) -> None:
         time.sleep(0.2)
     assert sink.logged > 50
     assert 4 <= len(sink._trails["vio"]) <= 6  # 10 Hz × 0.5 s
+
+
+def test_sessions_browser_model(tmp_path: Path) -> None:
+    from ariastreamlab.api import Experiment
+    from ariastreamlab.config.loader import load_dict
+    from ariastreamlab.dashboard.sessions import list_sessions, session_details
+
+    assert list_sessions(tmp_path / "nowhere") == []
+    cfg = load_dict(
+        {
+            "extends": "preset:rgb_imu",
+            "experiment": {"name": "browse", "participant": "P7"},
+            "storage": {"root": str(tmp_path)},
+            "mock": {"realtime": False, "seed": 1},
+        }
+    )
+    with Experiment(cfg, mock=True, duration_s=0.5) as exp:
+        trial = exp.begin("trial", {"n": 1})
+        exp.run()
+        exp.end(trial)
+        root = exp.session_dir
+    (tmp_path / "junk").mkdir()  # no manifest: ignored
+    broken = tmp_path / "zz_broken"
+    broken.mkdir()
+    (broken / "manifest.json").write_text("{not json")
+    rows = list_sessions(tmp_path)
+    assert [r.name for r in rows] == ["zz_broken", root.name]  # type: ignore[union-attr]
+    assert rows[0].problem is not None and "unreadable" in rows[0].as_row()["status"]
+    good = rows[1]
+    assert (good.experiment, good.participant, good.origin, good.status) == (
+        "browse",
+        "P7",
+        "mock",
+        "completed",
+    )
+    assert good.streams >= 3 and good.events >= 4 and good.duration_s is not None
+    row = good.as_row()
+    assert row["duration"].endswith(" s") and row["path"] == str(root)
+    d = session_details(root)  # type: ignore[arg-type]
+    assert d.manifest["experiment"] == "browse" and d.size_bytes > 0
+    assert "rgb" in d.summary_text and "session " in d.summary_text
+    assert any(e["name"] == "trial" and e["kind"] == "marker" for e in d.events)
+    assert d.intervals and d.intervals[0]["name"] == "trial" and d.intervals[0]["end_s"]
+    assert d.problems == []
+    bad = session_details(broken)
+    assert bad.problems and "manifest" in bad.problems[0]

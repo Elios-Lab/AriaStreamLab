@@ -29,8 +29,9 @@ from ariastreamlab.processing import list_processors, validate_processors
 
 app = typer.Typer(
     name="ariastreamlab",
-    help="Experiment framework for Meta Project Aria Gen 2 glasses.",
-    no_args_is_help=True,
+    help="Experiment framework for Meta Project Aria Gen 2 glasses. "
+    "Without a command, opens the application window.",
+    invoke_without_command=True,
     rich_markup_mode="rich",
     pretty_exceptions_enable=False,
 )
@@ -51,6 +52,7 @@ def _version_callback(value: bool) -> None:
 
 @app.callback()
 def _main(
+    ctx: typer.Context,
     version: Annotated[
         bool | None,
         typer.Option(
@@ -63,6 +65,41 @@ def _main(
     ] = None,
 ) -> None:
     """Experiment framework for Meta Project Aria Gen 2 glasses."""
+    del version  # handled by its eager callback
+    if ctx.invoked_subcommand is None:
+        _run_app(None, None, browser=False)
+
+
+def _run_app(path: Path | None, port: int | None, *, browser: bool) -> None:
+    from ariastreamlab.api import serve_app
+
+    try:
+        if browser:
+            dash = serve_app(path, port=port, native=False)
+            console.print(f"AriaStreamLab at [link={dash.url}]{dash.url}[/] — press Ctrl-C to quit")
+            while True:
+                time.sleep(1)
+        else:
+            console.print("opening the AriaStreamLab window (close it to quit)")
+            serve_app(path, port=port, native=True)
+    except AriaStreamLabError as exc:
+        _fail(exc)
+    except KeyboardInterrupt:
+        console.print("bye")
+
+
+@app.command("app")
+def app_command(
+    path: Annotated[
+        Path | None, typer.Argument(help="experiment.json to open in the designer")
+    ] = None,
+    port: Annotated[int | None, typer.Option("--port", help="Port (default 8765)")] = None,
+    browser: Annotated[
+        bool, typer.Option("--browser", help="Serve to the browser instead of a window")
+    ] = False,
+) -> None:
+    """Open the AriaStreamLab application: home, designer, monitor, sessions."""
+    _run_app(path, port, browser=browser)
 
 
 @app.command()
@@ -368,7 +405,7 @@ def design(
     ] = None,
     no_open: Annotated[bool, typer.Option("--no-open", help="Do not open the browser")] = False,
 ) -> None:
-    """Open the experiment designer in the browser (build, validate, save and run experiments)."""
+    """Open the experiment designer in the browser (the app's design page, no window)."""
     from ariastreamlab.api import serve_designer
 
     try:

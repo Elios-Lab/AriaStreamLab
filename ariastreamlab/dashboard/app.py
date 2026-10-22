@@ -44,6 +44,13 @@ def dashboard_available() -> bool:
     return importlib.util.find_spec("nicegui") is not None
 
 
+def native_available() -> bool:
+    """True when pywebview is installed (the desktop window of the ``ariastreamlab`` app)."""
+    import importlib.util
+
+    return importlib.util.find_spec("webview") is not None
+
+
 class Dashboard:
     """Process-wide dashboard server; sessions attach and detach their state."""
 
@@ -73,6 +80,8 @@ class Dashboard:
         self._run: _BrowserRun | None = None
         self.launcher: Launcher | None = None
         """Builds an experiment for :meth:`launch`; set by ``api`` (keeps this layer below it)."""
+        self.replay_launcher: Callable[..., Any] | None = None
+        """``replay_launcher(path, speed=…) -> Experiment`` for the Sessions page (set by api)."""
         self._prompt_lock = threading.Lock()
         self._prompt: tuple[int, str, threading.Event] | None = None
         self._prompt_seq = 0
@@ -86,13 +95,19 @@ class Dashboard:
     def running(self) -> bool:  # noqa: D102
         return self._thread is not None and self._thread.is_alive()
 
-    def start(self, timeout: float = 15.0) -> bool:
-        """Start the server thread once; returns True when it answers within ``timeout``."""
+    def start(self, timeout: float = 15.0, *, native: bool = False) -> bool:
+        """Start the server thread once; returns True when it answers within ``timeout``.
+
+        ``native`` opens a desktop window instead of relying on a browser (best effort from a
+        background thread; the ``ariastreamlab`` app runs the window on the main thread).
+        """
         if self.running:
             return self._ready.wait(timeout) and not self._failed.is_set()
         self._build_pages()
         self._failed.clear()
-        thread = threading.Thread(target=self._serve, name="dashboard-server", daemon=True)
+        thread = threading.Thread(
+            target=lambda: self.serve(native=native), name="dashboard-server", daemon=True
+        )
         self._thread = thread
         thread.start()
         deadline = time.monotonic() + timeout
@@ -180,13 +195,26 @@ class Dashboard:
             self.replay = None
 
     # -- server -------------------------------------------------------------------------
-    def _serve(self) -> None:
+    def serve(self, *, native: bool = False, show: bool = False) -> None:
+        """Run the server in the calling thread (blocks).
+
+        ``native=True`` opens the interface in a desktop window (pywebview) instead of a
+        browser tab — the ``ariastreamlab`` app; it needs the main thread on macOS. When
+        pywebview is not available the page is opened in the browser instead.
+        """
         from nicegui import app, ui
 
         @app.on_startup
         def _started() -> None:
             self._ready.set()
 
+        if native and not native_available():
+            log.warning(
+                "app.no_native_window",
+                note="pywebview is not installed (pip install pywebview); opening the browser",
+            )
+            native, show = False, True
+        self._build_pages()
         # under pytest NiceGUI replaces the port with this variable (for its screen tests)
         os.environ.setdefault("NICEGUI_SCREEN_TEST_PORT", str(self.config.port))
         try:
@@ -196,7 +224,9 @@ class Dashboard:
                 title="AriaStreamLab",
                 dark=True,
                 reload=False,
-                show=False,
+                show=show,
+                native=native,
+                window_size=(1440, 960) if native else None,
                 show_welcome_message=False,
                 uvicorn_logging_level="warning",
                 favicon="🕶️",
@@ -226,7 +256,13 @@ class Dashboard:
             return data
 
         @ui.page("/")
-        def index() -> None:
+        def home() -> None:
+            from ariastreamlab.dashboard.pages import build_home_page
+
+            build_home_page(dash, ui)
+
+        @ui.page("/monitor")
+        def monitor() -> None:
             _build_index(dash, ui)
 
         @ui.page("/design")
@@ -234,6 +270,12 @@ class Dashboard:
             from ariastreamlab.dashboard.designer_ui import build_design_page
 
             build_design_page(dash, ui)
+
+        @ui.page("/sessions")
+        def sessions() -> None:
+            from ariastreamlab.dashboard.pages import build_sessions_page
+
+            build_sessions_page(dash, ui)
 
     # -- the designer and sessions started from the browser ---------------------------------
     @property
@@ -288,6 +330,24 @@ class Dashboard:
             run = _BrowserRun(exp, origin="mock" if mock else "live")
             self._run = run
             run.start()
+
+    def launch_replay(self, path: Path | str, *, speed: float = 1.0) -> None:
+        """Replay a session directory or VRS file from the Sessions page (background thread)."""
+        with self._lock:
+            if self.replay_launcher is None:
+                raise RuntimeError("no replay launcher registered (start with `ariastreamlab app`)")
+            if self._run is not None and self._run.running:
+                raise RuntimeError("a session started from the browser is still running")
+            exp = self.replay_launcher(Path(path), speed=speed)
+            run = _BrowserRun(exp, origin="replay")
+            self._run = run
+            run.start()
+
+    @property
+    def sessions_root(self) -> Path:
+        """Where the Sessions page looks: the designer's ``storage.root`` (relative to its dir)."""
+        root = Path(str(self.designer.doc.get("storage", {}).get("root") or "sessions"))
+        return root if root.is_absolute() else (self.designer.base_dir / root).resolve()
 
     def run_state(self) -> dict[str, Any] | None:
         """State of the session started from the browser (``None`` when there was none)."""
@@ -419,13 +479,28 @@ def _fmt_t(t_s: float | None) -> str:
     return "host time" if t_s is None else f"{t_s:.2f} s"
 
 
-def _build_index(dash: Dashboard, ui: Any) -> None:
-    cfg = dash.config
+NAV = (("home", "/"), ("design", "/design"), ("monitor", "/monitor"), ("sessions", "/sessions"))
+
+
+def nav_header(ui: Any, current: str) -> Any:
+    """The application header: title, the four pages, and a slot for page status on the right."""
     ui.colors(primary="#5b8def")
     with ui.header().classes("items-center justify-between px-4"):
-        with ui.row().classes("items-center gap-4"):
+        with ui.row().classes("items-center gap-5"):
             ui.label("AriaStreamLab").classes("text-xl font-bold")
-            ui.link("designer", "/design").classes("text-white text-sm opacity-80")
+            for name, path in NAV:
+                link = ui.link(name, path).classes("text-white text-sm")
+                if name == current:
+                    link.classes("font-bold underline")
+                else:
+                    link.classes("opacity-75")
+        right = ui.row().classes("items-center gap-4")
+    return right
+
+
+def _build_index(dash: Dashboard, ui: Any) -> None:
+    cfg = dash.config
+    with nav_header(ui, "monitor"):
         session_label = ui.label("no session").classes("text-sm opacity-80")
         status_label = ui.label("").classes("text-sm")
 

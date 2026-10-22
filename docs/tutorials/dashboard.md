@@ -1,7 +1,21 @@
-# The dashboard and the experiment designer
+# The application: dashboard, designer, sessions
 
-`ariastreamlab run` and `ariastreamlab replay` serve a browser dashboard while the
-session runs (NiceGUI, installed with AriaStreamLab). Its
+`ariastreamlab` with no arguments opens the application in a desktop window: **Home**,
+**Design**, **Monitor** and **Sessions**. The window is the system WebView (WebKit on macOS,
+WebView2 on Windows, GTK WebKit2 or Qt on Linux) driven by NiceGUI, so the same pages are
+also what `ariastreamlab run` / `replay` serve to a browser at `http://127.0.0.1:8765/monitor`
+and what `ariastreamlab app --browser` serves; `"dashboard": {"native": true}` makes `run` and
+`replay` open a window too. The acquisition never waits for the window: it runs on worker
+threads and the interface subscribes to the bus like any other consumer.
+
+The **Sessions** page lists the session directories under the experiment's `storage.root`
+(editable), shows the selected session's manifest facts, quality summary, events and
+intervals, replays it through the pipeline at the chosen speed (the monitor opens on it) and
+opens its folder in the file manager.
+
+## The monitor
+
+`ariastreamlab run` and `ariastreamlab replay` serve the monitor while the session runs. Its
 job is to let you verify that acquisition is working *while the participant is still
 wearing the glasses* — that every stream flows at the expected rate, that nothing is being
 dropped and where, that the gaze projection lands where it should, that the device is not

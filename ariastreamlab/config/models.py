@@ -215,6 +215,10 @@ class DashboardConfig(_Strict):
     host: str = "127.0.0.1"
     port: int = Field(default=8765, ge=1024, le=65535)
     open_browser: bool = True
+    native: bool = Field(
+        default=False,
+        description="Open the dashboard in a desktop window (pywebview) instead of the browser",
+    )
     show: list[str] | None = Field(
         default=None, description="Streams / derived streams to display; null ⇒ all enabled"
     )

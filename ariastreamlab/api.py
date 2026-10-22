@@ -700,7 +700,8 @@ class Experiment:
         state.start()
         dash = get_dashboard(cfg)
         dash.launcher = launch_experiment
-        if not dash.start():
+        dash.replay_launcher = launch_replay
+        if not dash.start(native=cfg.native):
             self._log.warning(
                 "dashboard.unavailable",
                 note="the session runs without a dashboard (is the port free?)",
@@ -731,11 +732,17 @@ class Experiment:
         )
         self._dash_state, self._dash = state, dash
         self._log.info("dashboard.url", url=dash.url)
-        if cfg.open_browser and os.environ.get("ARIASTREAMLAB_OPEN_BROWSER", "1") != "0":
+        if (
+            cfg.open_browser
+            and not cfg.native
+            and os.environ.get("ARIASTREAMLAB_OPEN_BROWSER", "1") != "0"
+        ):
             import webbrowser
 
             threading.Thread(
-                target=lambda: webbrowser.open(dash.url), name="open-browser", daemon=True
+                target=lambda: webbrowser.open(dash.url + "monitor"),
+                name="open-browser",
+                daemon=True,
             ).start()
 
     def _start_rerun(self) -> None:
@@ -920,7 +927,14 @@ class Experiment:
         self._tap_thread.start()
 
 
-__all__ = ["AriaStreamLabError", "Experiment", "launch_experiment", "serve_designer"]
+__all__ = [
+    "AriaStreamLabError",
+    "Experiment",
+    "launch_experiment",
+    "launch_replay",
+    "serve_app",
+    "serve_designer",
+]
 
 
 def launch_experiment(
@@ -936,15 +950,25 @@ def launch_experiment(
     return exp
 
 
-def serve_designer(
+def launch_replay(path: Path, *, speed: float = 1.0) -> Experiment:
+    """Build a replay :class:`Experiment` for the app's Sessions page (its ``replay_launcher``)."""
+    return Experiment.replay(path, speed=speed, dashboard=True)
+
+
+def serve_app(
     config_path: Path | None = None,
     *,
     port: int | None = None,
+    native: bool = True,
     open_browser: bool = True,
+    page: str = "",
 ) -> Any:
-    """Start the dashboard server with the experiment designer (``ariastreamlab design``).
+    """Run the AriaStreamLab application (``ariastreamlab`` with no arguments).
 
-    Returns the :class:`~ariastreamlab.dashboard.app.Dashboard`; the caller blocks (Ctrl-C).
+    With ``native=True`` the interface opens in a desktop window and this call **blocks**
+    until the window is closed (it must run on the main thread). With ``native=False`` the
+    server starts in the background, the browser is opened on ``page`` and the dashboard is
+    returned so the caller can wait (``ariastreamlab design``).
     """
     from ariastreamlab.dashboard.app import get_dashboard
     from ariastreamlab.dashboard.designer import Designer
@@ -952,15 +976,22 @@ def serve_designer(
     base = DashboardConfig() if port is None else DashboardConfig(port=port)
     dash = get_dashboard(base)
     dash.launcher = launch_experiment
+    dash.replay_launcher = launch_replay
     if config_path is not None:
         dash.designer = Designer.from_file(config_path)
     else:
         dash.designer = Designer.from_preset("base", base_dir=Path.cwd())
+    if native:
+        try:
+            dash.serve(native=True)  # blocks until the window is closed
+        finally:
+            dash.stop_run()
+        return dash
     if not dash.start():
         raise AriaStreamLabError(
             f"cannot start the dashboard on {dash.url}", hint="is the port in use? try --port"
         )
-    url = dash.url + "design"
+    url = dash.url + page
     if open_browser and os.environ.get("ARIASTREAMLAB_OPEN_BROWSER", "1") != "0":
         import webbrowser
 
@@ -968,3 +999,10 @@ def serve_designer(
             target=lambda: webbrowser.open(url), name="open-browser", daemon=True
         ).start()
     return dash
+
+
+def serve_designer(
+    config_path: Path | None = None, *, port: int | None = None, open_browser: bool = True
+) -> Any:
+    """``ariastreamlab design``: the designer page in the browser (server in the background)."""
+    return serve_app(config_path, port=port, native=False, open_browser=open_browser, page="design")

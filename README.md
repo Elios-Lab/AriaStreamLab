@@ -4,13 +4,14 @@ A framework for running experiments with [Meta Project Aria Gen 2 glasses](https
 
 Built for researchers who need **trustworthy recordings** and **reproducible analyses**, the framework prioritises temporal correctness, provenance and observability over convenience. Where hardware behaviour diverges from the documentation, those differences are measured and documented.
 
-> **Status: 0.1 (alpha).** The complete pipeline (configuration, acquisition adapter, event
-> bus, processing graph, storage, replay, dashboard, designer, annotations and quality
-> monitoring — exists and is tested without hardware (173 tests); the live path is tested
-> against a fake SDK and verified on a MacBook with the glasses (14 hardware runs, including
-> the untethered hotspot flow and a replay reproducing the live counts). A 20-minute
-> validation session is the remaining step before calling it a release. The design, the plan
-> and all hardware findings are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+> **Status: 0.2 (alpha).** The complete pipeline (configuration, acquisition adapter, event
+> bus, processing graph, storage, replay, the application window with dashboard, designer and
+> sessions browser, annotations and quality monitoring) exists and is tested without hardware
+> (177 tests); the live path is tested against a fake SDK and verified on a MacBook with the
+> glasses — 15 hardware runs, including the untethered hotspot flow, a replay reproducing the
+> live counts, and a 20-minute session that showed what thermal mitigation does (the glasses
+> stop streaming at 42 °C; the framework now detects it). The design, the plan and all hardware
+> findings are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ```
 Meta Aria Gen 2 ──wireless──▶ Acquisition ──▶ Event bus ──▶ Processing DAG ──▶ Derived data
@@ -49,16 +50,31 @@ Three guarantees hold across the framework and are enforced by tests, not by con
 Everything is Parquet, JSON, MP4 or VRS: readable from pandas, DuckDB, R or MATLAB without
 AriaStreamLab installed.
 
-## Install and try it without the glasses
+## Install and open the application
 
 Python 3.11 is recommended (3.10–3.12 work; Meta's SDK has no 3.13 wheels yet).
 
 ```bash
 python3.11 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"                   # add ",aria" on the laptop that talks to the glasses
+ariastreamlab                             # opens the application window
+```
+
+`ariastreamlab` with no arguments opens a desktop window (macOS, Windows, Linux — a native
+window, not a browser tab) with four pages: **Home**, **Design** (build and validate an
+experiment, run it with the glasses or with synthetic data), **Monitor** (the live view of the
+running session) and **Sessions** (browse recordings, read their quality summaries and
+events, replay one, open its folder). `ariastreamlab app --browser` serves the same
+application to a browser instead; `ariastreamlab app experiment.json` opens with that file
+in the designer. On Linux the window needs GTK WebKit2 or Qt (`pip install 'pywebview[qt]'`);
+without it the application falls back to the browser.
+
+Everything the window does is also a command, for scripts and remote machines:
+
+```bash
 ariastreamlab doctor                      # environment check
 ariastreamlab inspect-config examples/mock_experiment.json
-ariastreamlab run examples/mock_experiment.json --mock --duration 10    # opens the dashboard
+ariastreamlab run examples/mock_experiment.json --mock --duration 10    # synthetic data
 ariastreamlab inspect sessions/<the new folder>            # what was written, quality summary
 ariastreamlab replay sessions/<the new folder> --speed 0   # same pipeline, from disk
 ```
@@ -95,8 +111,9 @@ anywhere.
    warnings about what the profile actually delivers (for example, `profile9` streams RGB at
    5 Hz and eye gaze at 25 Hz whatever the file asks). `ariastreamlab design` opens a form view
    of the same file in the browser, validated as you edit, and can start the run from there.
-5. **Run.** `ariastreamlab run pilot.json --duration 300`, or without a duration until you
-   stop it. The dashboard opens; the terminal reports rates every two seconds.
+5. **Run.** *Run* on the application's Design page, or `ariastreamlab run pilot.json
+   --duration 300` (without a duration it runs until you stop it). The monitor opens; the
+   terminal reports rates every two seconds.
 6. **Stop safely.** Ctrl-C once (or the duration elapses, or *stop* on the dashboard): the
    adapter stops streaming, releases the receiver so the SDK finalises the VRS, flushes every
    writer, and prints the quality summary — wait for it. A second Ctrl-C forces the exit; the
@@ -207,16 +224,18 @@ the glasses reached 42 °C while charging over USB, ended the stream themselves 
 the framework now says so instead of reporting a stale 800 Hz for the remaining ten minutes.
 See the architecture document, §0.13.)
 
-## Dashboard and designer
+## Application, dashboard and designer
 
-`run` and `replay` serve a dashboard at `http://127.0.0.1:8765/`: image streams with the
+The application window (`ariastreamlab`) and the dashboard that `run` / `replay` serve at
+`http://127.0.0.1:8765/monitor` are the same interface. The monitor shows image streams with the
 projected gaze, any scalar channel on a scrolling chart, the VIO trajectory, per-stream rates
 and drops, per-processor counters and latencies, the device's health and quality counters,
 marker and interval buttons, a parameter editor for running processors, and pause / speed /
 seek on a replay. It is a bus subscriber like any other — it cannot slow acquisition down and
 closing the tab changes nothing. `--no-dashboard`, `--dashboard-port`, `"dashboard":
-{"enabled": false}` or `ARIASTREAMLAB_DASHBOARD=0` turn it off or move it; the same data is
-served as JSON at `/api/state`.
+{"enabled": false}` or `ARIASTREAMLAB_DASHBOARD=0` turn it off or move it; `"dashboard":
+{"native": true}` makes `run` and `replay` open a window instead of a browser tab; the same
+data is served as JSON at `/api/state`.
 
 `ariastreamlab design [experiment.json]` opens the **experiment designer**: presets, streams
 with their allowed parameters, processors from the catalogue with forms generated from their
@@ -288,8 +307,8 @@ and the precision of each kind of event.
 | `ariastreamlab/processing` | `Processor` contract, plugin discovery, per-processor workers (queues, joins, stats), the graph, built-ins |
 | `ariastreamlab/storage` | session layout, manifest, chunked Parquet/image/video writers, reader, timeline index, `inspect`/repair |
 | `ariastreamlab/monitoring` | per-stream rates and drop accounting, the health log, the quality summary |
-| `ariastreamlab/dashboard` | `DashboardState` (the bus collector), the monitor page, `Designer` and the designer page, the Rerun sink |
-| `ariastreamlab/cli` | `ariastreamlab doctor \| devices \| streams \| presets \| processors \| schema \| inspect-config \| design \| run \| replay \| inspect` |
+| `ariastreamlab/dashboard` | the application: `DashboardState` (the bus collector), the monitor page, `Designer` and the designer page, the home and sessions pages, the native window, the Rerun sink |
+| `ariastreamlab/cli` | `ariastreamlab` (the app) `\| app \| doctor \| devices \| streams \| presets \| processors \| schema \| inspect-config \| design \| run \| replay \| inspect` |
 | `scripts/probe_sdk.py` | raw-SDK hardware probe that answered the design's assumptions |
 
 ## Development
