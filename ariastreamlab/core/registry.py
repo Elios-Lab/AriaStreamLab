@@ -59,7 +59,7 @@ class ParameterSpec:
     description: str = ""
 
     def validate(self, value: Any, stream_id: str) -> Any:
-        """Return ``value`` if allowed, else raise a student-readable :class:`RegistryError`."""
+        """Return ``value`` if allowed, else raise a readable :class:`RegistryError`."""
         if self.choices is not None and value not in self.choices:
             allowed = ", ".join(repr(c) for c in self.choices)
             raise RegistryError(
@@ -96,7 +96,7 @@ class StreamDescriptor:
         parameters: User-configurable parameters.
         units: Human-readable units for the dashboard and the storage ``_meta.json``.
         group: Alias group this stream belongs to (``"slam"`` for the four CV cameras,
-            ``"imu"`` for the two IMUs); lets a student write ``"imu": {...}`` once.
+            ``"imu"`` for the two IMUs); lets one write ``"imu": {...}`` once.
         description: One line for the docs.
     """
 

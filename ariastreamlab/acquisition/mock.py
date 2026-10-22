@@ -115,6 +115,8 @@ class MockSource(Source):
         self._received: Counter[str] = Counter()
         self._dropped: Counter[str] = Counter()
         self._provenance = Provenance("mock", "mock", session_id)
+        self.calibration: dict[str, Any] | None = None
+        """The synthetic calibration, set when :meth:`start` publishes it."""
         self._periods = {
             sid: rate_to_period_ns(_rate(p, REGISTRY.get(sid))) for sid, p in self._streams.items()
         }
@@ -242,6 +244,7 @@ class MockSource(Source):
             "transform_device_cpf": identity,
             "note": "synthetic calibration from MockSource",
         }
+        self.calibration = calib  # also written to calibration/device_calibration.json
         bus.publish(
             "raw.device_calibration",
             Sample(

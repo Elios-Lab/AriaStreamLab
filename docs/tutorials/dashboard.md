@@ -1,10 +1,14 @@
 # The dashboard and the experiment designer
 
 `ariastreamlab run` and `ariastreamlab replay` serve a browser dashboard while the
-session runs (NiceGUI; `pip install 'ariastreamlab[dashboard]'`, already part of `[dev]`). It
-needs nothing from you: the page opens at `http://127.0.0.1:8765/` and closes with the session
-(the server itself stays up for the rest of the process, so a script that runs several
-experiments keeps one tab).
+session runs (NiceGUI; `pip install 'ariastreamlab[dashboard]'`, already part of `[dev]`). Its
+job is to let you verify that acquisition is working *while the participant is still
+wearing the glasses* — that every stream flows at the expected rate, that nothing is being
+dropped and where, that the gaze projection lands where it should, that the device is not
+overheating — and to let you annotate the session as it happens. It needs nothing from you:
+the page opens at `http://127.0.0.1:8765/` and closes with the session (the server itself
+stays up for the rest of the process, so a script that runs several experiments keeps one
+tab).
 
 ```bash
 ariastreamlab run examples/mock_experiment.json --mock          # try it without glasses

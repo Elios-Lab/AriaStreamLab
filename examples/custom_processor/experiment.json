@@ -1,7 +1,7 @@
 {
   "extends": "preset:base",
   "experiment": { "name": "custom_processor_demo", "participant": "P000",
-                  "description": "A student-written processor loaded from processors/ next to this file" },
+                  "description": "A processor written for this experiment, loaded from processors/ next to this file" },
   "streams": {
     "eye_gaze": { "enabled": true },
     "imu": { "enabled": true }

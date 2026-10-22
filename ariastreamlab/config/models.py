@@ -269,7 +269,7 @@ class MockConfig(_Strict):
 
 # --------------------------------------------------------------------------- root
 class ExperimentConfig(_Strict):
-    """The whole experiment, i.e. the one JSON file a student edits."""
+    """The whole experiment, i.e. the one JSON file a researcher edits."""
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
@@ -421,7 +421,7 @@ class ExperimentConfig(_Strict):
 
 
 def format_validation_error(exc: Exception, path: Path | None = None) -> ConfigError:
-    """Turn a pydantic ``ValidationError`` into a :class:`ConfigError` a student can act on."""
+    """Turn a pydantic ``ValidationError`` into a :class:`ConfigError` a researcher can act on."""
     from pydantic import ValidationError
 
     where = f" in {path}" if path else ""

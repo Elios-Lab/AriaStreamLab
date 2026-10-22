@@ -393,7 +393,7 @@ class Designer:
         return rep
 
     def to_dict(self, compact: bool = True) -> dict[str, Any]:
-        """The document; ``compact`` drops values equal to the defaults (what a student writes)."""
+        """The document; ``compact`` drops values equal to the defaults (a hand-written file)."""
         doc = json.loads(json.dumps(self.doc, default=str))
         if not compact:
             return dict(doc)

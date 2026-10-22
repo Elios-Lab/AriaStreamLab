@@ -1,9 +1,9 @@
-"""Student-facing exception hierarchy.
+"""User-facing exception hierarchy.
 
 Every error raised on purpose by AriaStreamLab derives from :class:`AriaStreamLabError` and
 carries a message written for a person who may never have seen the Meta SDK. Wrap SDK
 exceptions at the adapter boundary; never let a raw C++ stack trace be the first thing a
-student reads.
+researcher reads.
 """
 
 from __future__ import annotations

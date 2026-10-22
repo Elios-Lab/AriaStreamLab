@@ -155,7 +155,7 @@ class ProcessorContext:
 
 
 class Processor(ABC):
-    """Base class of every processor (built-in, plugin or student-written).
+    """Base class of every processor (built-in, plugin or written for one experiment).
 
     Class attributes:
         version: Bumped when the algorithm changes; stored with every output stream.

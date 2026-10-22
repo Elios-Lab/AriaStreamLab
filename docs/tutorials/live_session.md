@@ -1,7 +1,11 @@
 # Running a live session with the glasses
 
 Everything below was verified on a MacBook with Aria Gen 2 glasses and client SDK 2.5.1
-(docs/ARCHITECTURE.md §0.7–0.11). Linux laptops should behave the same but have not been tried.
+(docs/ARCHITECTURE.md §0.7–0.12, fourteen hardware runs). Linux laptops should behave the
+same but have not been tried. Where the hardware behaves differently from Meta's
+documentation — the rates `profile9` really delivers, the SDK call that pauses the data path,
+the hotspot restart that drops the laptop's Wi-Fi — this tutorial says so, because those are
+the things that cost recording time.
 
 ## 0. One-time setup
 
@@ -29,7 +33,8 @@ Everything below was verified on a MacBook with Aria Gen 2 glasses and client SD
 `ariastreamlab inspect-config pilot.json` prints the *live plan*: profile, interface, batch
 period and warnings such as "profile9 delivers about 5 Hz RGB" or "als has no live callback".
 The default profile is `profile9`, the only one measured so far; `device.profile.mode:
-"named"` uses any profile the device lists.
+"named"` uses any profile the device lists. `ariastreamlab design pilot.json` shows the same
+file and the same plan as a form, if you prefer to build it there.
 
 ## 2. Run
 
@@ -63,18 +68,25 @@ What happens, in order (each step is a `device_state` event in `events/events.pa
 6. **stop** (duration elapsed or Ctrl-C) → `STOPPING` → `CONNECTED`; the receiver is released,
    which is what makes the SDK finalise the VRS file.
 
-The `run` output shows per-stream rates, the pipeline line, and warnings; `--json` prints a
-summary including `source.data_path` (`usb`/`wifi`), the stream source IP, SDK queue depths,
-TicSync validity and raw-message counts.
+The `run` output shows per-stream rates, the pipeline line, warnings and, at the end, the
+quality summary (device, transport, app-queue and processor drops per stream, effective
+rates, battery and temperature over the session); `--json` prints the same plus
+`source.data_path` (`usb`/`wifi`), the stream source IP, SDK queue depths, TicSync validity
+and raw-message counts.
 
 ## 3. What is written
 
 ```
 sessions/<utc>_pilot_P001/
-├── manifest.json        device serial/profile/interface/transport log, raw.files + sha256, pipeline stats, warnings
-├── raw/<date-time>.vrs  the host-received VRS (the SDK names the file) — the ground truth
-├── derived/…            processor outputs
-├── events/events.parquet markers + device_state events
+├── manifest.json          device serial/firmware/profile/interface/transport log, raw.files + sha256,
+│                          measured rates, pipeline stats, quality summary, warnings
+├── experiment.json        the resolved configuration, frozen at start (experiment.source.json: as written)
+├── raw/<date-time>.vrs    the host-received VRS (the SDK names the file) — the ground truth
+├── calibration/device_calibration.json
+├── derived/<stream>/…     processor outputs (Parquet / MP4 / PNG, each with _meta.json)
+├── events/events.parquet  markers, intervals, device_state, config_change, clock_anchor
+├── quality/               summary.{json,txt}, device_health.jsonl, device_quality_stats.jsonl
+├── indexes/timeline.parquet
 └── logs/session.log
 ```
 
@@ -94,8 +106,10 @@ counters). Thermal mitigation starts at 42 °C skin temperature; a hotspot sessi
 glasses by ~7 °C in two minutes, so keep wireless sessions short (≈20 min) or tethered.
 
 All of it is on the dashboard (`http://127.0.0.1:8765/`, opened by `run`): the Device, Link
-and Device-quality cards, the per-stream rates, the images with gaze overlay, and the marker
-buttons — see [dashboard.md](dashboard.md). `--no-dashboard` runs headless.
+and Device-quality cards, the per-stream rates, the images with the gaze overlay, and the
+marker and interval buttons — see [dashboard.md](dashboard.md). `--no-dashboard` runs
+headless. The same snapshots are appended to `quality/*.jsonl` as they arrive, so a session
+that crashes still leaves its health history on disk.
 
 ## 5. Troubleshooting
 

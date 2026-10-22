@@ -1,9 +1,11 @@
 # Writing your own processor
 
 A *processor* turns samples of one or more streams into new, derived streams — a filter on the
-IMU, a crop of the RGB image, a detector, a feature extractor. You write one small Python
-class, point your experiment JSON at it, and AriaStreamLab takes care of threads, queues,
-timestamps, storage, replay and the dashboard.
+IMU, a crop of the RGB image, a saccade detector, a feature extractor. You write one small
+Python class, point the experiment JSON at it, and AriaStreamLab takes care of threads,
+queues, timestamps, storage, replay, provenance and the dashboard. The same class runs on the
+live stream and on a recording, so an algorithm can be developed and validated offline on
+data captured once and then deployed live unchanged.
 
 ## 1. The smallest possible processor
 
@@ -112,6 +114,13 @@ class Threshold(Processor):
 * `on_calibration()` is called once the device calibration is known (on a live run, a few
   seconds after start; on a VRS replay, before the first sample). `ProjectToRgb`
   (`gaze.project_to_rgb`) shows how to use it.
+* Parameters can be changed while the experiment runs — `experiment.set_parameters("thr",
+  threshold=0.7)` from Python or the *parameters* dialog of the dashboard. The new values are
+  validated against `Parameters`, `self.params` is swapped, and a `config_change` event with
+  the device time of the change is written next to the markers; the frozen `experiment.json`
+  keeps the start-up values. If `setup()` derived state from the parameters (a filter
+  coefficient, a release threshold), override `on_parameters_changed(old, new)` to refresh
+  it; it runs on the caller's thread, so keep it to simple assignments.
 
 ## 4. Several inputs
 
@@ -142,12 +151,16 @@ allowed to block on a slow processor:
 
 | policy | behaviour | typical use |
 |---|---|---|
-| `drop_oldest` (default, `queue_size: 64`) | newest samples win | signals (IMU, gaze) |
+| `drop_oldest` (default) | newest samples win | signals (IMU, gaze) |
 | `latest` | queue of 1, always the freshest sample | images, anything for display |
 | `drop_newest` | keep what is queued, ignore new arrivals | batch-like work |
 
-Drops are counted per processor and per input (`ariastreamlab run` prints `drop=N`; the
-manifest keeps `pipeline.<id>.queue_dropped`). **At maximum-speed replay (`--speed 0`) and
+`queue_size` defaults to half a second of the primary input (400 for an 800 Hz IMU, 64 for a
+camera; at least 64, at most 2000) — enough to ride out the interpreter pauses a laptop
+produces under load; set it explicitly for images (`1`–`2` with `latest`). The value used is
+recorded as `execution.effective_queue_size` in the manifest. Drops are counted per processor
+and per input (`ariastreamlab run` prints them, the dashboard's Pipeline card shows them, the
+manifest keeps `pipeline.<id>.queue_dropped` and the quality summary lists them per stream). **At maximum-speed replay (`--speed 0`) and
 with the non-realtime mock, the policies are replaced by back-pressure**: nobody is waiting in
 real time, so the source simply waits for the processors and every sample is processed. This
 is what makes `replay` the tool for re-processing a recording with new parameters.
@@ -175,7 +188,9 @@ to your experiment.
 
 ## 8. The rule that keeps replay honest
 
-A processor must not read `sample.provenance.origin`. Live, mock and replayed samples are
-identical in every other field, and `tests/invariants/test_live_vs_replay_processing.py`
-records a session, replays it and checks that every derived value is the same. If your
-processor needs randomness, seed it from `ctx.parameters`, not from the clock.
+A processor must not read `sample.provenance.origin`. Live, synthetic and replayed samples
+are identical in every other field, and `tests/invariants/test_live_vs_replay_processing.py`
+records a session, replays it and checks that every derived value and timestamp is the same.
+If your processor needs randomness, seed it from `ctx.parameters`, not from the clock; if it
+needs "now", use the primary sample's device timestamp, not the host clock — the host clock
+is the one thing that differs between a live run and a replay.

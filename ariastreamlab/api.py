@@ -112,6 +112,7 @@ class Experiment:
         self.source: Source | None = None
         self.graph: ProcessingGraph | None = None
         self._tap: Subscription[Any] | None = None
+        self._tap_derived: Subscription[Any] | None = None
         self._tap_thread: threading.Thread | None = None
         self._subscriptions: list[tuple[Subscription[Any], threading.Thread]] = []
         self._stop = threading.Event()
@@ -400,8 +401,18 @@ class Experiment:
             self.source.stop()
             if self.graph is not None:
                 self.graph.stop()  # drains what is queued, in topological order
+            self._settle_stats()
             if previous_handler is not None:
                 signal.signal(signal.SIGINT, previous_handler)
+
+    def _settle_stats(self, timeout: float = 3.0) -> None:
+        """Wait until the statistics tap has consumed everything published so far."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            tap, derived = self._tap, self._tap_derived
+            if (tap is None or len(tap) == 0) and (derived is None or len(derived) == 0):
+                return
+            time.sleep(0.01)
 
     CLOCK_ANCHOR_PERIOD_S = 60.0
     """How often a ``clock_anchor`` event (host monotonic ↔ UTC) is added to a paced session."""
@@ -856,6 +867,8 @@ class Experiment:
             "derived.*", maxsize=65_536, policy=DropPolicy.DROP_OLDEST, name="stats-tap-derived"
         )
 
+        self._tap_derived = derived
+
         def _loop() -> None:
             assert self._tap is not None
             while not self._tap.closed:
@@ -868,6 +881,12 @@ class Experiment:
                         self.time_estimator.observe(extra)
                 for d in derived.drain():
                     self.stats.observe(d)
+            # closed: account for whatever was still queued so the final counts are complete
+            for extra in self._tap.drain():
+                self.stats.observe(extra)
+                self.time_estimator.observe(extra)
+            for d in derived.drain():
+                self.stats.observe(d)
             derived.close()
 
         self._tap_thread = threading.Thread(target=_loop, name="stats-tap", daemon=True)

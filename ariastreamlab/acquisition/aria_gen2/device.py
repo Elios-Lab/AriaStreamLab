@@ -14,7 +14,7 @@ on hardware (docs/ARCHITECTURE.md §0.10, "untethered sequence"):
    the cable is unplugged.
 
 Every SDK call goes through :meth:`_call`, which records the transport used and converts
-SDK exceptions into :class:`DeviceError` with a hint for the student.
+SDK exceptions into :class:`DeviceError` with a hint for the researcher.
 """
 
 from __future__ import annotations
