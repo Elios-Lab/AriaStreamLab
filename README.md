@@ -1,17 +1,10 @@
 # AriaStreamLab
 
-A Python framework for running experiments with **Meta Project Aria Gen 2** glasses. One
-JSON file describes the experiment, one command runs it; the raw VRS recording the glasses
-produce is kept as the ground truth, processors derive data from the live streams, every
-session carries its provenance, and any session can be replayed through the same pipeline
-without the glasses.
+A framework for running experiments with [Meta Project Aria Gen 2 glasses](https://www.projectaria.com/). Define an experiment in a single JSON file and run it with one command. The raw [VRS](https://facebookresearch.github.io/vrs/) recording (a format for recording and replaying sensor data streams) is preserved as ground truth, while processors derive data from the live streams. Every session includes its provenance and can be replayed through the same processing pipeline without the glasses.
 
-It is written for researchers who need recordings they can trust and analyses they can
-reproduce: every design decision favours temporal correctness, provenance and observability
-over convenience, and the places where the hardware behaves differently from its
-documentation are measured and written down rather than papered over.
+Built for researchers who need **trustworthy recordings** and **reproducible analyses**, the framework prioritises temporal correctness, provenance and observability over convenience. Where hardware behaviour diverges from the documentation, those differences are measured and documented.
 
-> **Status: 0.1 (alpha).** The complete pipeline — configuration, acquisition adapter, event
+> **Status: 0.1 (alpha).** The complete pipeline (configuration, acquisition adapter, event
 > bus, processing graph, storage, replay, dashboard, designer, annotations and quality
 > monitoring — exists and is tested without hardware (173 tests); the live path is tested
 > against a fake SDK and verified on a MacBook with the glasses (14 hardware runs, including
