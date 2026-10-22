@@ -358,6 +358,33 @@ def run(
 
 
 @app.command()
+def design(
+    path: Annotated[
+        Path | None, typer.Argument(help="experiment.json to open (default: a blank experiment)")
+    ] = None,
+    port: Annotated[
+        int | None, typer.Option("--port", help="Dashboard port (default 8765)")
+    ] = None,
+    no_open: Annotated[bool, typer.Option("--no-open", help="Do not open the browser")] = False,
+) -> None:
+    """Open the experiment designer in the browser (build, validate, save and run experiments)."""
+    from ariastreamlab.api import serve_designer
+
+    try:
+        dash = serve_designer(path, port=port, open_browser=not no_open)
+    except AriaStreamLabError as exc:
+        _fail(exc)
+        return
+    console.print(f"designer [link={dash.url}design]{dash.url}design[/] — press Ctrl-C to quit")
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        dash.stop_run()
+        console.print("bye")
+
+
+@app.command()
 def replay(
     path: Annotated[Path, typer.Argument(help="session directory or .vrs file")],
     speed: Annotated[

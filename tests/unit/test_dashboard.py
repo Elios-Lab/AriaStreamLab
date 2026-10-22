@@ -182,6 +182,8 @@ def test_dashboard_server_serves_page_and_state(tmp_path, monkeypatch) -> None:
         time.sleep(1.5)
         html = urllib.request.urlopen(exp.dashboard_url, timeout=5).read().decode()
         assert "AriaStreamLab" in html
+        design = urllib.request.urlopen(exp.dashboard_url + "design", timeout=5).read().decode()
+        assert "experiment designer" in design
         state = json.loads(
             urllib.request.urlopen(exp.dashboard_url + "api/state", timeout=5).read()
         )

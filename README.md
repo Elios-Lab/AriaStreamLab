@@ -10,7 +10,7 @@ it, and the raw VRS recording stays the ground truth while processors produce de
 > and the CLI exist; everything but the live path is tested without hardware, the live path
 > against a fake SDK and with a hardware smoke test that passes on a MacBook with the glasses
 > (live session over the hotspot, control hand-over to Wi-Fi, VRS, replay of the session).
-> Phase 6 (annotations, quality summary, polish) follows — see
+> Phase 6 (designer ✔, annotations, quality summary, polish) is in progress — see
 > [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design, the plan and the hardware
 > findings.
 
@@ -102,6 +102,13 @@ drop the oldest frame first) and the same page serves live, mock and replay sess
 it shows is also available as JSON at `/api/state`, and `Experiment.dashboard_url` tells a
 script where it is.
 
+`ariastreamlab design [experiment.json]` opens the **experiment designer**: a form view of the
+JSON file — presets, streams with their allowed parameters, processors from the catalogue with
+generated parameter forms and input wiring, device/storage/dashboard options — validated live
+with the same checks as `inspect-config`, previewed as the compact JSON it saves, and runnable
+from the page (mock or live, with the hotspot prompt as a dialog). See
+[docs/tutorials/dashboard.md](docs/tutorials/dashboard.md).
+
 ## Layout
 
 | Path | Purpose |
@@ -113,8 +120,8 @@ script where it is.
 | `ariastreamlab/processing` | `Processor` contract, plugin discovery, per-processor workers (queues, joins, stats), the graph, built-ins |
 | `ariastreamlab/storage` | session layout, manifest, chunked Parquet/image/video writers, reader, timeline index, `inspect`/repair |
 | `ariastreamlab/monitoring` | per-stream rates and drop accounting |
-| `ariastreamlab/dashboard` | `DashboardState` (the bus collector, usable without NiceGUI) and the NiceGUI page |
-| `ariastreamlab/cli` | `ariastreamlab doctor \| devices \| streams \| presets \| processors \| schema \| inspect-config \| run \| replay \| inspect` |
+| `ariastreamlab/dashboard` | `DashboardState` (the bus collector, usable without NiceGUI), the NiceGUI monitor page, `Designer` (the experiment-file model) and the designer page |
+| `ariastreamlab/cli` | `ariastreamlab doctor \| devices \| streams \| presets \| processors \| schema \| inspect-config \| design \| run \| replay \| inspect` |
 | `scripts/probe_sdk.py` | raw-SDK hardware probe that answers the assumptions in the architecture doc |
 | `docs/` | architecture, `tutorials/live_session.md`, `tutorials/custom_processors.md`, `tutorials/dashboard.md` |
 | `examples/` | experiment files, `custom_processor/` (a processor loaded from a file next to the JSON) |

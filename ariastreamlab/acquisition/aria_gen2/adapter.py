@@ -60,6 +60,8 @@ class AriaGen2Source(Source):
             events).
         health_interval_s: Period of the ``health.device`` snapshot.
         quality_interval_s: Period of the ``health.quality`` snapshot.
+        prompt: Shown when the user must act (join the hotspot); blocks until done. Default:
+            print and wait for ENTER on the terminal; the dashboard supplies a dialog.
     """
 
     def __init__(
@@ -73,12 +75,13 @@ class AriaGen2Source(Source):
         health_interval_s: float = 5.0,
         quality_interval_s: float = 10.0,
         no_data_timeout_s: float = 20.0,
+        prompt: Callable[[str], None] | None = None,
     ) -> None:
         self.config = config
         self.session_id = session_id
         self.clock = clock or HostClock()
         self.manager = manager or AriaGen2DeviceManager(
-            config.device, clock=self.clock, on_transition=on_transition
+            config.device, clock=self.clock, on_transition=on_transition, prompt=prompt
         )
         if manager is not None and on_transition is not None:
             manager.machine.on_transition(on_transition)

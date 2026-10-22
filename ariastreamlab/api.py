@@ -31,7 +31,7 @@ from ariastreamlab.acquisition.base import DeviceTransition, ReplayControl, Sour
 from ariastreamlab.acquisition.mock import MockSource
 from ariastreamlab.acquisition.replay import make_replay_source
 from ariastreamlab.config.loader import load_config, load_preset
-from ariastreamlab.config.models import ExperimentConfig
+from ariastreamlab.config.models import DashboardConfig, ExperimentConfig
 from ariastreamlab.core.bus import DropPolicy, EventBus, Subscription
 from ariastreamlab.core.errors import AriaStreamLabError, ConfigError, ReplayError
 from ariastreamlab.core.logging import configure_logging, get_logger
@@ -86,6 +86,8 @@ class Experiment:
         self._dash_state: Any = None
         self._dash: Any = None
         self._injected_source = source
+        self.prompt: Callable[[str], None] | None = None
+        """Interactive step for live sessions (join the hotspot…); ``None`` ⇒ terminal ENTER."""
         self.duration_s = duration_s
         self.persist = persist
         self._source_json = source_json
@@ -322,6 +324,7 @@ class Experiment:
             session_id=self.session.session_id,
             clock=self.clock,
             on_transition=self._on_device_transition,
+            prompt=self.prompt,
         )
 
     def _on_device_transition(self, t: DeviceTransition) -> None:
@@ -566,6 +569,7 @@ class Experiment:
         }
         state.start()
         dash = get_dashboard(cfg)
+        dash.launcher = launch_experiment
         if not dash.start():
             self._log.warning(
                 "dashboard.unavailable",
@@ -688,4 +692,51 @@ class Experiment:
         self._tap_thread.start()
 
 
-__all__ = ["AriaStreamLabError", "Experiment"]
+__all__ = ["AriaStreamLabError", "Experiment", "launch_experiment", "serve_designer"]
+
+
+def launch_experiment(
+    config: ExperimentConfig,
+    *,
+    mock: bool,
+    duration_s: float | None,
+    prompt: Callable[[str], None] | None = None,
+) -> Experiment:
+    """Build an :class:`Experiment` for the dashboard's *Run* button (its ``launcher``)."""
+    exp = Experiment(config, mock=mock, duration_s=duration_s, dashboard=True)
+    exp.prompt = prompt
+    return exp
+
+
+def serve_designer(
+    config_path: Path | None = None,
+    *,
+    port: int | None = None,
+    open_browser: bool = True,
+) -> Any:
+    """Start the dashboard server with the experiment designer (``ariastreamlab design``).
+
+    Returns the :class:`~ariastreamlab.dashboard.app.Dashboard`; the caller blocks (Ctrl-C).
+    """
+    from ariastreamlab.dashboard.app import get_dashboard
+    from ariastreamlab.dashboard.designer import Designer
+
+    base = DashboardConfig() if port is None else DashboardConfig(port=port)
+    dash = get_dashboard(base)
+    dash.launcher = launch_experiment
+    if config_path is not None:
+        dash.designer = Designer.from_file(config_path)
+    else:
+        dash.designer = Designer.from_preset("base", base_dir=Path.cwd())
+    if not dash.start():
+        raise AriaStreamLabError(
+            f"cannot start the dashboard on {dash.url}", hint="is the port in use? try --port"
+        )
+    url = dash.url + "design"
+    if open_browser and os.environ.get("ARIASTREAMLAB_OPEN_BROWSER", "1") != "0":
+        import webbrowser
+
+        threading.Thread(
+            target=lambda: webbrowser.open(url), name="open-browser", daemon=True
+        ).start()
+    return dash

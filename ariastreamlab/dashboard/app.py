@@ -14,6 +14,7 @@ import os
 import threading
 import time
 from collections.abc import Callable, Mapping
+from pathlib import Path
 from typing import Any
 
 from ariastreamlab.acquisition.base import ReplayControl
@@ -24,6 +25,10 @@ from ariastreamlab.dashboard.state import DashboardState
 __all__ = ["Dashboard", "dashboard_available", "get_dashboard"]
 
 log = get_logger("ariastreamlab.dashboard")
+
+Launcher = Callable[..., Any]
+"""``launcher(config, *, mock, duration_s, prompt) -> Experiment`` (an object with ``run``,
+``stop``, ``config``, ``session_dir`` and the context-manager protocol)."""
 
 MarkHook = Callable[[str, Mapping[str, Any] | None], Any]
 
@@ -51,6 +56,15 @@ class Dashboard:
         self._lock = threading.Lock()
         self._pages_built = False
         self._generation = 0
+        # the experiment designer (/design) and sessions started from it
+        self._designer: Any = None
+        self.last_saved: Path | None = None
+        self._run: _BrowserRun | None = None
+        self.launcher: Launcher | None = None
+        """Builds an experiment for :meth:`launch`; set by ``api`` (keeps this layer below it)."""
+        self._prompt_lock = threading.Lock()
+        self._prompt: tuple[int, str, threading.Event] | None = None
+        self._prompt_seq = 0
 
     # -- lifecycle --------------------------------------------------------------------
     @property
@@ -192,6 +206,110 @@ class Dashboard:
         def index() -> None:
             _build_index(dash, ui)
 
+        @ui.page("/design")
+        def design() -> None:
+            from ariastreamlab.dashboard.designer_ui import build_design_page
+
+            build_design_page(dash, ui)
+
+    # -- the designer and sessions started from the browser ---------------------------------
+    @property
+    def designer(self) -> Any:
+        """The :class:`~ariastreamlab.dashboard.designer.Designer` behind ``/design``."""
+        if self._designer is None:
+            from ariastreamlab.dashboard.designer import Designer
+
+            self._designer = Designer.from_preset("base", base_dir=Path.cwd())
+        return self._designer
+
+    @designer.setter
+    def designer(self, value: Any) -> None:
+        self._designer = value
+
+    @staticmethod
+    def sdk_available() -> bool:  # noqa: D102
+        from ariastreamlab.acquisition.aria_gen2 import sdk_available
+
+        return sdk_available()
+
+    def launch(self, designer: Any, *, mock: bool, duration_s: float | None) -> None:
+        """Start a session from the designer's document in a background thread.
+
+        Raises ``RuntimeError`` when one started from here is still running.
+        """
+        from ariastreamlab.config.loader import load_dict
+
+        with self._lock:
+            if self.launcher is None:
+                raise RuntimeError("no launcher registered (start with `ariastreamlab design`)")
+            if self._run is not None and self._run.running:
+                raise RuntimeError("a session started from the browser is still running")
+            cfg = load_dict(designer.to_dict(compact=False), base_dir=designer.base_dir)
+            # the server is this one: never open another tab, keep the port we are on
+            cfg = cfg.model_copy(
+                update={
+                    "dashboard": cfg.dashboard.model_copy(
+                        update={
+                            "enabled": True,
+                            "open_browser": False,
+                            "host": self.config.host,
+                            "port": self.config.port,
+                        }
+                    ),
+                    "storage": cfg.storage.model_copy(
+                        update={"root": (designer.base_dir / cfg.storage.root).resolve()}
+                    ),
+                }
+            )
+            exp = self.launcher(cfg, mock=mock, duration_s=duration_s, prompt=self._ask)
+            run = _BrowserRun(exp, origin="mock" if mock else "live")
+            self._run = run
+            run.start()
+
+    def run_state(self) -> dict[str, Any] | None:
+        """State of the session started from the browser (``None`` when there was none)."""
+        run = self._run
+        if run is None:
+            return None
+        return {
+            "state": run.state,
+            "running": run.running,
+            "experiment": run.exp.config.experiment.name,
+            "origin": run.origin,
+            "error": run.error,
+            "session_dir": None if run.exp.session_dir is None else str(run.exp.session_dir),
+        }
+
+    def stop_run(self) -> None:
+        """Ask the browser-started session to stop (no-op otherwise)."""
+        run = self._run
+        if run is not None and run.running:
+            run.exp.stop()
+            self.answer_prompt()  # a session waiting at the hotspot prompt must not hang
+
+    def _ask(self, message: str) -> None:
+        """``Experiment.prompt`` for browser-started sessions: a dialog, answered by a click."""
+        with self._prompt_lock:
+            self._prompt_seq += 1
+            done = threading.Event()
+            self._prompt = (self._prompt_seq, message, done)
+        log.info("dashboard.prompt", message=message.splitlines()[0])
+        done.wait(timeout=600)
+        with self._prompt_lock:
+            if self._prompt is not None and self._prompt[2] is done:
+                self._prompt = None
+
+    def pending_prompt(self) -> tuple[int, str] | None:
+        """``(id, message)`` of the question a live session is waiting on, if any."""
+        with self._prompt_lock:
+            return None if self._prompt is None else (self._prompt[0], self._prompt[1])
+
+    def answer_prompt(self) -> None:
+        """Release a session waiting on :meth:`pending_prompt`."""
+        with self._prompt_lock:
+            if self._prompt is not None:
+                self._prompt[2].set()
+
     # -- helpers used by the page -------------------------------------------------------
     def _replay_view(self) -> dict[str, Any] | None:
         rc = self.replay
@@ -208,6 +326,35 @@ class Dashboard:
             }
         except Exception:
             return None
+
+
+class _BrowserRun:
+    """One session started from the designer page, on its own thread."""
+
+    def __init__(self, exp: Any, *, origin: str) -> None:
+        self.exp = exp
+        self.origin = origin
+        self.state = "starting"
+        self.error: str | None = None
+        self._thread = threading.Thread(target=self._main, name="browser-run", daemon=True)
+
+    @property
+    def running(self) -> bool:
+        return self._thread.is_alive()
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def _main(self) -> None:
+        try:
+            with self.exp:
+                self.state = "running"
+                self.exp.run(install_signal_handler=False)
+            self.state = "finished"
+        except Exception as exc:
+            self.state = "failed"
+            self.error = str(exc)
+            log.exception("dashboard.run_failed")
 
 
 _SINGLETON: Dashboard | None = None
@@ -246,7 +393,9 @@ def _build_index(dash: Dashboard, ui: Any) -> None:
     cfg = dash.config
     ui.colors(primary="#5b8def")
     with ui.header().classes("items-center justify-between px-4"):
-        ui.label("AriaStreamLab").classes("text-xl font-bold")
+        with ui.row().classes("items-center gap-4"):
+            ui.label("AriaStreamLab").classes("text-xl font-bold")
+            ui.link("designer", "/design").classes("text-white text-sm opacity-80")
         session_label = ui.label("no session").classes("text-sm opacity-80")
         status_label = ui.label("").classes("text-sm")
 

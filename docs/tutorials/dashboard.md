@@ -1,6 +1,6 @@
-# The dashboard
+# The dashboard and the experiment designer
 
-`ariastreamlab run` and `ariastreamlab replay` serve a single-page browser dashboard while the
+`ariastreamlab run` and `ariastreamlab replay` serve a browser dashboard while the
 session runs (NiceGUI; `pip install 'ariastreamlab[dashboard]'`, already part of `[dev]`). It
 needs nothing from you: the page opens at `http://127.0.0.1:8765/` and closes with the session
 (the server itself stays up for the rest of the process, so a script that runs several
@@ -26,6 +26,7 @@ ARIASTREAMLAB_DASHBOARD=0 ariastreamlab replay … --speed 0      # a whole shel
 | Pipeline | per processor: fired, outputs, exec ms, latency ms, queue drops, errors | `ProcessingGraph.stats()` |
 | Device quality | the device's own per-sensor counters (live, every 10 s) | `health.quality` |
 | Markers | a name field, a *mark* button and shortcuts; the last 15 events (markers, `device_state`, session events); a marker made from the page is `Experiment.mark(name)` — same row in `events/events.parquet`, same device-time estimate | `events.*` |
+| header | links to the *designer* (`/design`, below) | |
 | Replay | pause / resume, speed (0.25–4×), a seek slider over the recording (shown for the `session` and `tools` replay backends; the `sdk` backend runs Meta's engine and has no controls) | `ReplayControl` |
 
 Everything on the page is also served as JSON at `/api/state` (a snapshot: session, images'
@@ -52,6 +53,32 @@ state["streams"]["rgb"]["effective_rate_hz"], state["replay"]
 `show: null` displays every enabled stream and every processor output. Set `host` to
 `"0.0.0.0"` to watch from another machine on the hotspot (there is no authentication — the
 page is meant for the laptop running the experiment).
+
+## Designing an experiment in the browser
+
+```bash
+ariastreamlab design                      # a blank experiment in the current directory
+ariastreamlab design pilot.json           # edit an existing file
+```
+
+`/design` is a form view of `experiment.json`. Start from a preset, name the experiment and
+participant, switch streams on (their parameters — fps, resolution, rate — appear next to each
+one, restricted to what Aria Gen 2 accepts), add processors from the catalogue (built-ins,
+installed plugins and the `.py` files in `processors/` next to the file; *rescan* after adding
+one), wire their inputs from a list that only offers streams that exist upstream, set their
+parameters in forms generated from each processor's `Parameters` model, and adjust device,
+storage and dashboard settings. The right-hand column re-validates after every change with
+the same code `inspect-config` uses — problems are listed with their JSON path, the *live
+plan* shows the profile, interface and the warnings about what profile9 really delivers — and
+previews the compact JSON that *save* writes (values equal to the defaults are left out, so
+the file reads like one written by hand).
+
+*Run* starts the experiment in the same process: mock or live, optionally for a fixed
+duration; the monitor page shows it and the session lands under `storage.root` next to the
+file. On a live run the "join the hotspot" step that `run` asks on the terminal becomes a
+dialog on the page; *stop* ends the session (and releases that dialog). The JSON is what gets
+run and what is frozen into the session's manifest — nothing happens in the designer that
+could not be done by editing the file.
 
 ## How it fits the architecture
 
