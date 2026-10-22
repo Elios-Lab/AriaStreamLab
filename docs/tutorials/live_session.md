@@ -54,10 +54,12 @@ What happens, in order (each step is a `device_state` event in `events/events.pa
    certificate, `HttpStreamingConfig` names it to the device → `STREAM_READY`;
 4. **stream** → `STREAMING`. The glasses find the laptop as `oatmeal_server.local` and push
    data; the first samples arrive within a few seconds.
-5. **control moves to Wi-Fi**: once data flows over the hotspot, the adapter opens a second
-   control connection to the address the stream comes from and logs
-   `control moved to Wi-Fi (…); the USB cable can be unplugged`. From then on status, quality
-   statistics and the final stop go over Wi-Fi.
+5. **control moves to Wi-Fi when the cable goes**: the adapter remembers the address the
+   stream comes from and, as soon as the USB link disappears (or at stop, if needed), opens a
+   control connection to it so status, quality statistics and the final stop keep working.
+   It does not do this while the cable is in: the SDK's connect call blocks the interpreter
+   for its whole duration (up to ~20 s has been seen) and the data path pauses meanwhile.
+   `device.connection.wifi_control: "early"` restores the eager hand-over if you prefer it.
 6. **stop** (duration elapsed or Ctrl-C) → `STOPPING` → `CONNECTED`; the receiver is released,
    which is what makes the SDK finalise the VRS file.
 

@@ -164,7 +164,7 @@ def _config(tmp_path: Path, **over: Any):
         "processors": [
             {"id": "mag", "type": "imu.magnitude", "inputs": ["imu_left"], "outputs": ["mag"]}
         ],
-        "device": {"connection": {"hotspot": {"start": False}}},
+        "device": {"connection": {"hotspot": {"start": False}, "wifi_control": "early"}},
         "storage": {"root": str(tmp_path / "sessions"), "image_format": "png"},
         "dashboard": {"enabled": False},
     }
@@ -292,6 +292,29 @@ def test_live_start_failure_marks_session_crashed(
     assert m.status == "crashed"
     assert exp.source is not None and exp.source.manager.state is DeviceState.ERROR  # type: ignore[attr-defined]
     assert not FakeStreamReceiver.instances  # the server is never started without a device
+
+
+def test_control_moves_to_wifi_only_when_the_usb_link_disappears(
+    fake_sdk: FakeSdk, tmp_path: Path
+) -> None:
+    from ariastreamlab.acquisition.aria_gen2.adapter import AriaGen2Source
+
+    cfg = _config(tmp_path, device={"connection": {"hotspot": {"start": False}}})
+    mgr = device_mod.AriaGen2DeviceManager(cfg.device, sdk=fake_sdk, cli=FakeCli())
+    src = AriaGen2Source(cfg, session_id="s2", manager=mgr, health_interval_s=0.2)
+    bus = EventBus()
+    src.start(bus)
+    rec = FakeStreamReceiver.instances[0]
+    rec.connect_device()  # over Wi-Fi, cable still in
+    rec.push_imu(5)
+    time.sleep(1.5)
+    assert src.data_path == "wifi" and mgr.transport == "usb"  # no hand-over yet
+    fake_sdk.usb = []  # cable out
+    time.sleep(2.5)
+    assert mgr.transport == "wifi" and mgr.control_ip == "192.168.37.28"
+    assert any("control moved to Wi-Fi" in w for w in src.warnings)
+    src.stop()
+    bus.close()
 
 
 def test_live_source_direct_with_bus(fake_sdk: FakeSdk, tmp_path: Path) -> None:

@@ -70,6 +70,12 @@ class ConnectionConfig(_Strict):
         "when this host has no streaming certificate yet (the command generates a new one "
         "and installs it on the device and the host)",
     )
+    wifi_control: Literal["on_unplug", "early", "never"] = Field(
+        default="on_unplug",
+        description="When to move device control from the USB link to the Wi-Fi address the "
+        "stream comes from: when the USB link disappears (default), as soon as data flows "
+        "(stalls the data path for the duration of the SDK connect call), or never",
+    )
     reconnect_attempts: int = Field(default=2, ge=0, le=20)
     device_ip: str | None = Field(default=None, description="Skip discovery and connect to this IP")
     server_port: int = Field(default=6768, ge=1024, le=65535)

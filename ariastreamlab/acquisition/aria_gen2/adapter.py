@@ -175,6 +175,14 @@ class AriaGen2Source(Source):
         self._time_sync = None
         if self._monitor is not None:
             self._monitor.join(3)
+        if (
+            mgr.transport == "usb"
+            and self.stream_source_ip
+            and self.data_path == "wifi"
+            and not self._usb_link_present()
+        ):
+            log.info("live.stop_over_wifi", ip=self.stream_source_ip)
+            mgr.reconnect_over_ip(self.stream_source_ip)
         with contextlib.suppress(DeviceError):
             if mgr.state in (DeviceState.STREAMING, DeviceState.STOPPING):
                 mgr.stop_streaming()
@@ -391,18 +399,32 @@ class AriaGen2Source(Source):
                         )
                         self.warnings.append(msg)
                         log.warning("live.data_over_usb", note=msg)
+                # Control hand-over to Wi-Fi. DeviceClient.connect() holds the interpreter
+                # lock for its whole duration (21 s in run 13) and every SDK callback stalls
+                # meanwhile, so it is done only when needed: when the USB link disappears
+                # (``on_unplug``, default), immediately (``early``), or never.
+                mode = self.config.device.connection.wifi_control
                 if (
                     not wifi_control_tried
+                    and mode != "never"
                     and self.data_path == "wifi"
                     and mgr.transport != "wifi"
                     and self.stream_source_ip
                 ):
-                    wifi_control_tried = True
-                    if mgr.reconnect_over_ip(self.stream_source_ip):
-                        self.warnings.append(
-                            f"control moved to Wi-Fi ({self.stream_source_ip}); "
-                            "the USB cable can be unplugged"
-                        )
+                    usb_present = self._usb_link_present() if mode == "on_unplug" else True
+                    if mode == "early" or not usb_present:
+                        wifi_control_tried = True
+                        if not usb_present:
+                            log.warning(
+                                "live.usb_unplugged",
+                                note="USB link gone; moving control to Wi-Fi "
+                                "(data may pause while the connection is made)",
+                            )
+                        if mgr.reconnect_over_ip(self.stream_source_ip):
+                            self.warnings.append(
+                                f"control moved to Wi-Fi ({self.stream_source_ip})"
+                                + ("" if not usb_present else "; the USB cable can be unplugged")
+                            )
             if total and self.first_sample_host_ns is None:
                 self.first_sample_host_ns = self.clock.now_ns()
             if not total and not no_data_warned and now - t_start > self.no_data_timeout_s:
@@ -449,6 +471,13 @@ class AriaGen2Source(Source):
                 q = mgr.quality()
                 if q is not None:
                     bus.publish("health.quality", q)
+
+    def _usb_link_present(self) -> bool:
+        try:
+            client = self.manager._ensure_client()
+            return bool(list(client.usb_network_devices()))
+        except Exception:
+            return False
 
     def _is_usb_ip(self, ip: str) -> bool:
         try:
