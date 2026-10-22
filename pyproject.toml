@@ -7,13 +7,15 @@ name = "ariastreamlab"
 version = "0.1.1"
 description = "Experiment-oriented framework for Meta Project Aria Gen 2 glasses: acquisition, realtime processing, storage, replay and monitoring."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10,<3.13"
 authors = [{ name = "Riccardo Berta", email = "riccardo.berta@unige.it" }]
-keywords = ["project-aria", "egocentric", "sensors", "iot", "research", "teaching"]
+keywords = ["project-aria", "egocentric", "sensors", "iot", "research", "experiments"]
 classifiers = [
-  "Development Status :: 2 - Pre-Alpha",
+  "Development Status :: 3 - Alpha",
   "Intended Audience :: Science/Research",
-  "Intended Audience :: Education",
+  "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",

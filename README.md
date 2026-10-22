@@ -313,5 +313,6 @@ ARIA_HARDWARE=1 pytest -m hardware -s   # on the paired laptop: 15 s live sessio
 
 ## Licence
 
-To be decided (MIT or Apache-2.0). Meta's Project Aria Client SDK is a separate, proprietary
-dependency that AriaStreamLab calls but does not redistribute.
+MIT — see [LICENSE](LICENSE). Meta's Project Aria Client SDK and `projectaria_tools` are
+separate dependencies under their own licences; AriaStreamLab calls them and does not
+redistribute them.
