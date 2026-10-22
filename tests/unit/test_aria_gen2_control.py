@@ -443,7 +443,14 @@ def test_manager_full_sequence(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
     mgr.disconnect()
     assert mgr.state is DeviceState.DISCONNECTED
     ops = [e["op"] for e in mgr.transport_log]
-    assert ops[:5] == ["connect", "status", "status", "hotspot_start", "hotspot_join"]
+    assert ops[:6] == [
+        "connect",
+        "status",
+        "status",
+        "hotspot_status",
+        "hotspot_start",
+        "hotspot_join",
+    ]
     assert ("reconnect_over_ip" in ops and ops[-2:] == ["stop_streaming", "disconnect_all"]) or ops[
         -1
     ] == "stop_streaming"

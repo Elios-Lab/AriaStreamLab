@@ -306,6 +306,19 @@ class AriaGen2DeviceManager(DeviceManager):
         except DeviceError as exc:
             status = None
             log.debug("device.hotspot_status_failed", error=str(exc))
+        log.info(
+            "hotspot.check",
+            laptop_ssid=current,
+            hotspot_ssid=None if status is None else status.ssid,
+            hotspot_enabled=None if status is None else hotspot_enabled(status),
+        )
+        self._record(
+            "hotspot_status",
+            laptop_ssid=current,
+            hotspot_ssid=None if status is None else status.ssid,
+            enabled=None if status is None else hotspot_enabled(status),
+            raw=None if status is None else status.raw_output[-300:],
+        )
         if (
             status is not None
             and hotspot_enabled(status)
@@ -504,6 +517,10 @@ def current_wifi_ssid() -> str | None:
         candidates = [
             (["networksetup", "-getairportnetwork", "en0"], r"Current Wi-Fi Network:\s*(.+)"),
             (["ipconfig", "getsummary", "en0"], r"^\s*SSID\s*:\s*(.+)$"),
+            (
+                ["system_profiler", "SPAirPortDataType", "-detailLevel", "basic"],
+                r"Current Network Information:\s*\n\s*(.+?):\s*$",
+            ),
         ]
     elif system == "Linux":
         candidates = [

@@ -111,6 +111,8 @@ class AriaGen2Source(Source):
         self.vrs_files: list[Path] = []
         self.first_sample_host_ns: int | None = None
         self.link: dict[str, Any] = {}
+        self._last_ticsync: dict[str, Any] = {"valid": False}
+        self._last_queues: dict[str, int] = {}
 
     # -- configuration before start ------------------------------------------------------
     def record_raw_to(self, raw_dir: Path) -> None:
@@ -247,6 +249,7 @@ class AriaGen2Source(Source):
         )
         self._binder.bind(receiver)
         receiver.register_raw_message_callback(self._raw_message)
+        self._size_sdk_queues(receiver)
         self._receiver = receiver
         try:
             self._server = receiver.start_server()
@@ -258,12 +261,43 @@ class AriaGen2Source(Source):
             ) from exc
         self._time_sync = receiver.get_time_sync()
 
+    def _size_sdk_queues(self, receiver: Any) -> None:
+        """Size the SDK's per-stream queues for the batch period.
+
+        With ``batch_period_ms = 800`` one batch carries ~24 gaze/hand samples and ~640 IMU
+        samples, while Meta's defaults are 10 and 800: run 11 showed the eye-gaze queue
+        dropping 25 of 455 samples at the SDK level. Keep room for three batches.
+        """
+        batches = 3.0
+        seconds = max(self.plan.batch_period_ms, 200) / 1000.0 * batches
+        sizes = {
+            "imu": int(max(800, 800 * seconds)),
+            "vio_high_freq": int(max(800, 800 * seconds)),
+            "eye_gaze": int(max(32, 30 * seconds)),
+            "hand_pose": int(max(32, 30 * seconds)),
+            "vio": int(max(32, 10 * seconds)),
+            "rgb": 100,
+            "slam": 1000,
+            "et": 100,
+        }
+        for name, size in sizes.items():
+            setter = getattr(receiver, f"set_{name}_queue_size", None)
+            if setter is not None:
+                with contextlib.suppress(Exception):
+                    setter(size)
+        log.debug("live.sdk_queue_sizes", **sizes)
+
     def _raw_message(self, message: Any, *_: Any) -> None:
         with contextlib.suppress(Exception):  # never let a counter break an SDK thread
             self._raw_messages[str(getattr(message, "id", "?")).rsplit(".", 1)[-1]] += 1
 
     def _teardown_receiver(self) -> None:
+        # the TimeSyncRef belongs to the receiver: calling it after stop_server() segfaults
+        # (hardware run 11), so freeze the last reading and drop the reference first
+        self._last_ticsync = self._ticsync()
+        self._last_queues = self._queue_sizes()
         receiver, self._receiver, self._server = self._receiver, None, None
+        self._time_sync = None
         if receiver is None:
             return
 
@@ -421,7 +455,7 @@ class AriaGen2Source(Source):
     def _queue_sizes(self) -> dict[str, int]:
         r = self._receiver
         if r is None:
-            return {}
+            return self._last_queues
         out: dict[str, int] = {}
         for name in ("rgb", "slam", "et", "imu", "vio", "vio_high_freq", "eye_gaze", "hand_pose"):
             fn = getattr(r, f"get_{name}_queue_size", None)
@@ -434,7 +468,7 @@ class AriaGen2Source(Source):
     def _ticsync(self) -> dict[str, Any]:
         ts = self._time_sync
         if ts is None:
-            return {"valid": False}
+            return self._last_ticsync
         try:
             return {"connected": bool(ts.is_connected()), "valid": bool(ts.is_valid())}
         except Exception:

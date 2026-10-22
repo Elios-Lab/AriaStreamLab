@@ -241,8 +241,8 @@ def test_live_experiment_end_to_end(
     )
     assert src_stats.extra["control_transport"] == "wifi"  # moved to Wi-Fi during the run
     assert src_stats.extra["raw_messages"]["ALS_EVENT"] >= 2
-    assert src_stats.extra["ticsync"] == {"connected": True, "valid": True}
-    assert src.link["sdk_queues"]["imu"] == 3  # last snapshot before the receiver was released
+    assert src_stats.extra["ticsync"] == {"connected": True, "valid": True}  # frozen at teardown
+    assert src_stats.extra["sdk_queues"]["imu"] == 3
     kinds = {type(h).__name__ for h in health}
     assert "DeviceHealth" in kinds and "QualityStats" in kinds and "dict" in kinds
     # manifest: device record, raw VRS with checksum, state events
