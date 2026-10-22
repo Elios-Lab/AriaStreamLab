@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -129,6 +129,10 @@ class MotionDetector(Processor):
         self._last_ts: int | None = None
         self._release = self.params.release or 0.7 * self.params.threshold
         self._emitted_once = False
+
+    def on_parameters_changed(self, old: Any, new: Any) -> None:  # noqa: D102
+        del old
+        self._release = new.release or 0.7 * new.threshold
 
     def process(self, inputs: Inputs) -> Emit | None:  # noqa: D102
         imu = _imu(inputs)

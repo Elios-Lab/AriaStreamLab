@@ -214,3 +214,71 @@ def test_dashboard_disabled_by_env(monkeypatch) -> None:
     with exp:
         assert exp.dashboard_url is None
         exp.run()
+
+
+def test_state_audio_level_trajectory_and_app_queues(make_sample) -> None:
+    from ariastreamlab.core.payloads import AudioPayload, PosePayload
+
+    bus = EventBus()
+    state = DashboardState(
+        bus,
+        max_channel_hz=0,
+        bus_stats_provider=lambda: {"dash:raw": {"enqueued": 10, "delivered": 8, "dropped": 2}},
+    )
+    state.start()
+    try:
+        audio = AudioPayload(np.full((320, 2), 3277, dtype=np.int16), 16000)
+        bus.publish("raw.audio", make_sample("audio", 10, 10, 0, audio))
+        for i in range(5):
+            pose = PosePayload((float(i), float(2 * i), 1.0), (1.0, 0.0, 0.0, 0.0))
+            bus.publish("raw.vio", make_sample("vio", 100 + i, 100 + i, i, pose))
+        # a dict output with x/y (pixels) is not a pose
+        bus.publish(
+            "derived.gaze_rgb",
+            DerivedSample(
+                "m",
+                "gaze_rgb",
+                200,
+                ("rgb",),
+                (200,),
+                "g",
+                0,
+                1,
+                {"x": 5.0, "y": 6.0},
+                make_sample().provenance,
+            ),
+        )
+        _wait(lambda: state.samples_seen == 7)
+    finally:
+        state.stop()
+    snap = state.snapshot()
+    assert snap["channels"]["audio/level_db"]["unit"] == "dBFS"
+    assert -21 < snap["channels"]["audio/level_db"]["last"] < -19  # 0.1 full scale ≈ −20 dBFS
+    assert state.pose_streams() == ["vio"]
+    assert state.trajectory("vio") == [[float(i), float(2 * i)] for i in range(5)]
+    assert state.trajectory("vio", last_s=97e-9) == [[3.0, 6.0], [4.0, 8.0]]  # window ends at t=200
+    assert state.trajectory("gaze_rgb") == [[5.0, 6.0]]  # data exists, but it is not a pose
+    assert snap["app_queues"]["dash:raw"]["dropped"] == 2
+
+
+def test_rerun_sink_logs_to_a_memory_recording(monkeypatch) -> None:
+    pytest.importorskip("rerun")
+    from ariastreamlab.api import Experiment
+    from ariastreamlab.config.loader import load_dict
+
+    monkeypatch.setenv("ARIASTREAMLAB_RERUN_SPAWN", "0")
+    cfg = load_dict(
+        {
+            "extends": "preset:full_capture",
+            "experiment": {"name": "rr"},
+            "dashboard": {"rerun": True, "show": ["rgb", "imu_left", "vio", "eye_gaze"]},
+            "mock": {"realtime": False, "seed": 2},
+        }
+    )
+    with Experiment(cfg, mock=True, duration_s=0.5, persist=False) as exp:
+        exp.run()
+        sink = exp.rerun
+        assert sink is not None and sink.recording is not None
+        time.sleep(0.2)
+    assert sink.logged > 50
+    assert 4 <= len(sink._trails["vio"]) <= 6  # 10 Hz × 0.5 s

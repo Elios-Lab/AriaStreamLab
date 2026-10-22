@@ -207,3 +207,48 @@ def test_cli_processors_and_parameter_validation(tmp_path: Path) -> None:
     summary = json.loads(r.stdout[r.stdout.index("{") :])
     assert summary["processors"]["blinks"]["errors"] == 0
     assert summary["processors"]["blinks"]["outputs"] >= 1
+
+
+def test_intervals_round_trip_through_the_session(tmp_path: Path) -> None:
+    from ariastreamlab.storage.reader import SessionReader
+
+    cfg = load_dict({**_fast_config(), "storage": {"root": str(tmp_path / "s")}})
+    exp = Experiment(cfg, mock=True, duration_s=0.5)
+    with exp:
+        iid = exp.begin("trial", {"trial": 1, "condition": "A"})
+        exp.run()
+        exp.mark("fixation", at_ns=1_000_000_000_000 + 200_000_000)  # an exact device time
+        exp.end(iid, {"correct": True})
+        exp.begin("block")  # left open on purpose
+        root = exp.session_dir
+        live = exp.intervals()
+    assert root is not None
+    assert [i.name for i in live] == ["trial", "block"]
+    reader = SessionReader(root)
+    stored = reader.intervals()
+    assert [(i.name, i.end_ns is None) for i in stored] == [("trial", False), ("block", True)]
+    assert stored[0].payload == {"trial": 1, "condition": "A", "correct": True}
+    assert stored[0].interval_id == iid and stored[0].duration_s is not None
+    fix = reader.events(kind="marker", name="fixation")
+    assert len(fix) == 1 and fix[0].timestamp_source == "device"
+    assert fix[0].device_timestamp_ns == 1_000_000_000_000 + 200_000_000
+    assert {e.name for e in reader.events(kind="session")} >= {"acquisition_start", "open"}
+    r = runner.invoke(app, ["inspect", str(root), "--events"])
+    assert r.exit_code == 0, r.output
+    assert "fixation" in r.output and "Intervals (2)" in r.output and "open" in r.output
+    r = runner.invoke(app, ["inspect", str(root), "--events", "--json"])
+    d = json.loads(r.stdout)
+    assert [i["name"] for i in d["intervals"]] == ["trial", "block"]
+    assert d["intervals"][1]["end_s"] is None
+    assert any(e["name"] == "fixation" and e["timestamp_source"] == "device" for e in d["events"])
+
+
+def test_clock_anchor_events_are_added_periodically(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(Experiment, "CLOCK_ANCHOR_PERIOD_S", 0.3)
+    cfg = load_dict({**_fast_config(), "mock": {"realtime": True, "seed": 1}})
+    with Experiment(cfg, mock=True, duration_s=1.0, persist=False) as exp:
+        exp.run()
+    anchors = [e for e in exp.events.all() if e.kind == "clock_anchor"]
+    assert 2 <= len(anchors) <= 4
+    assert anchors[0].payload["utc_ns"] > 0 and anchors[0].payload["device_offset_ns"] is not None
+    assert anchors[0].timestamp_source == "estimated"

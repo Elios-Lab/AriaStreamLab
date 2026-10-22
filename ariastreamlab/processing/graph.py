@@ -192,6 +192,24 @@ class ProcessingGraph:
         """Processor ids, upstream first."""
         return list(self._order)
 
+    def update_parameters(self, processor_id: str, changes: Mapping[str, Any]) -> dict[str, Any]:
+        """Change a running processor's parameters; returns the full new parameters."""
+        worker = self.workers.get(processor_id)
+        if worker is None:
+            raise ConfigError(
+                f"no processor {processor_id!r}",
+                hint=f"processors: {', '.join(self.workers) or 'none'}",
+            )
+        return worker.update_parameters(changes)
+
+    def parameters(self) -> dict[str, dict[str, Any]]:
+        """Current parameters of every processor (as plain dicts)."""
+        out = {}
+        for pid, w in self.workers.items():
+            p = w.ctx.parameters
+            out[pid] = dict(p.model_dump(mode="json")) if hasattr(p, "model_dump") else dict(p)
+        return out
+
     def stats(self) -> dict[str, ProcessorStats]:
         """Per-processor snapshot."""
         return {pid: w.stats() for pid, w in self.workers.items()}
@@ -202,7 +220,14 @@ class ProcessingGraph:
 
     def describe(self) -> list[dict[str, Any]]:
         """Manifest entries (id, type, class, version, parameters, execution)."""
-        return [r.describe() for r in self.resolved]
+        out = []
+        for r in self.resolved:
+            d = r.describe()
+            w = self.workers.get(r.cfg.id)
+            if w is not None:
+                d["execution"]["effective_queue_size"] = w.queue_size
+            out.append(d)
+        return out
 
     def stream_info(self) -> dict[str, dict[str, Any]]:
         """Provenance for every output stream (goes into the stream's ``_meta.json``)."""

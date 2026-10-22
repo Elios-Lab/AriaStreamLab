@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import signal
 import threading
@@ -37,7 +38,9 @@ from ariastreamlab.core.errors import AriaStreamLabError, ConfigError, ReplayErr
 from ariastreamlab.core.logging import configure_logging, get_logger
 from ariastreamlab.core.registry import REGISTRY
 from ariastreamlab.core.sample import AnySample, Origin
-from ariastreamlab.events.markers import DeviceTimeEstimator, Event, EventLog
+from ariastreamlab.events.markers import DeviceTimeEstimator, Event, EventLog, Interval
+from ariastreamlab.monitoring.health import HealthLog, directory_size
+from ariastreamlab.monitoring.quality import QualitySummary, build_summary
 from ariastreamlab.monitoring.stats import StatsTracker, StreamStats
 from ariastreamlab.processing.graph import ProcessingGraph
 from ariastreamlab.processing.runner import ProcessorStats
@@ -102,6 +105,10 @@ class Experiment:
         self.events = EventLog(self.bus, self.time_estimator, self.clock)
         self.session: SessionInfo | None = None
         self.store: Session | None = None
+        self.health: HealthLog | None = None
+        self.rerun: Any = None
+        self.quality_summary: QualitySummary | None = None
+        self._opened_at: float | None = None
         self.source: Source | None = None
         self.graph: ProcessingGraph | None = None
         self._tap: Subscription[Any] | None = None
@@ -284,8 +291,13 @@ class Experiment:
             )
         )
         self._opened = True
+        self._opened_at = time.monotonic()
+        self.health = HealthLog(self.bus, session_dir=self.session_dir)
+        self.health.start()
         if self.dashboard_enabled:
             self._start_dashboard(origin)
+        if self.config.dashboard.rerun:
+            self._start_rerun()
         self._log.info(
             "session.open",
             session_id=self.session.session_id,
@@ -370,11 +382,15 @@ class Experiment:
             # slow machine.
             paced = self.source.capabilities.is_paced
             deadline = None if duration is None or not paced else time.monotonic() + duration
+            next_anchor = time.monotonic() + self.CLOCK_ANCHOR_PERIOD_S
             while not self._stop.is_set():
                 if self.source.finished.is_set():
                     break
                 if deadline is not None and time.monotonic() >= deadline:
                     break
+                if paced and time.monotonic() >= next_anchor:
+                    self._anchor_clock()
+                    next_anchor = time.monotonic() + self.CLOCK_ANCHOR_PERIOD_S
                 self._stop.wait(0.1)
         except BaseException as exc:
             self._failed = exc
@@ -386,6 +402,21 @@ class Experiment:
                 self.graph.stop()  # drains what is queued, in topological order
             if previous_handler is not None:
                 signal.signal(signal.SIGINT, previous_handler)
+
+    CLOCK_ANCHOR_PERIOD_S = 60.0
+    """How often a ``clock_anchor`` event (host monotonic ↔ UTC) is added to a paced session."""
+
+    def _anchor_clock(self) -> None:
+        """Record host-monotonic ↔ UTC (and the device offset estimate) so drift can be analysed."""
+        self.events.mark(
+            "anchor",
+            {
+                "monotonic_ns": self.clock.now_ns(),
+                "utc_ns": time.time_ns(),
+                "device_offset_ns": self.time_estimator.offset_ns,
+            },
+            kind="clock_anchor",
+        )
 
     def stop(self) -> None:
         """Ask :meth:`run` to return (thread-safe)."""
@@ -409,15 +440,29 @@ class Experiment:
         if self._tap_thread is not None:
             self._tap_thread.join(timeout=5)
         root: Path | None = None
+        if self.health is not None:
+            self.health.stop()
+        self.quality_summary = self._build_quality_summary()
         if self.store is not None:
             status: Status = "crashed" if self._failed is not None else "completed"
+            extra = self._manifest_extra()
+            extra["quality"] = self.quality_summary.as_dict()
             root = self.store.finalize(
                 status=status,
                 events=self.events,
                 stream_stats=self.stream_stats(),
                 ended_utc_ns=time.time_ns(),
-                extra=self._manifest_extra(),
+                extra=extra,
             )
+            if root is not None and self.store.layout is not None and self.store.manifest:
+                # the recorder flushed during finalize: measure the directory as it really is
+                self.quality_summary.disk_bytes = directory_size(root)
+                self.quality_summary.duration_s = self.store.manifest.duration_s
+                self.store.manifest.quality = self.quality_summary.as_dict()
+                self.store.manifest.write(self.store.layout.manifest)
+                self._write_quality_files(self.store.layout.quality, self.quality_summary)
+        if self.rerun is not None:
+            self.rerun.stop()
         self._set_dash_state("crashed" if self._failed is not None else "finished")
         if self._dash_state is not None:
             self._dash_state.stop()
@@ -474,9 +519,67 @@ class Experiment:
         self._subscriptions.append((sub, t))
         return sub
 
-    def mark(self, name: str, payload: Mapping[str, Any] | None = None) -> Event:
-        """Add a timestamped annotation (same time base as the sensor streams)."""
-        return self.events.mark(name, payload)
+    def mark(
+        self, name: str, payload: Mapping[str, Any] | None = None, *, at_ns: int | None = None
+    ) -> Event:
+        """Add a timestamped annotation (same time base as the sensor streams).
+
+        Without ``at_ns`` the event is stamped now and its device time is estimated from the
+        samples seen so far; pass a sample's ``device_timestamp_ns`` as ``at_ns`` to annotate
+        exactly that instant (e.g. from a processor callback or a replay).
+        """
+        return self.events.mark(name, payload, at_ns=at_ns)
+
+    def begin(
+        self, name: str, payload: Mapping[str, Any] | None = None, *, at_ns: int | None = None
+    ) -> str:
+        """Open an interval annotation (``trial``, ``condition``…); returns its id."""
+        return self.events.begin(name, payload, at_ns=at_ns)
+
+    def end(
+        self,
+        name_or_id: str,
+        payload: Mapping[str, Any] | None = None,
+        *,
+        at_ns: int | None = None,
+    ) -> str:
+        """Close an interval opened with :meth:`begin` (by id, or the latest with that name)."""
+        return self.events.end(name_or_id, payload, at_ns=at_ns)
+
+    def intervals(self, name: str | None = None) -> list[Interval]:
+        """The ``begin``/``end`` pairs recorded so far."""
+        return self.events.intervals(name)
+
+    def set_parameters(self, processor_id: str, **changes: Any) -> dict[str, Any]:
+        """Change a processor's parameters while it runs; recorded as a ``config_change`` event.
+
+        The frozen ``experiment.json`` and the manifest keep the start-up values; the event
+        (``events/events.parquet``, name ``processors.<id>.parameters``) carries the change
+        and the full parameters afterwards, with the device time it took effect.
+        """
+        if self.graph is None:
+            raise ConfigError("this experiment has no processors")
+        new = self.graph.update_parameters(processor_id, changes)
+        self.events.mark(
+            f"processors.{processor_id}.parameters",
+            {"processor": processor_id, "changes": dict(changes), "parameters": new},
+            kind="config_change",
+        )
+        return new
+
+    def _parameter_forms(self) -> dict[str, tuple[Any, dict[str, Any]]]:
+        if self.graph is None:
+            return {}
+        return {
+            pid: (type(w.processor).Parameters, dict(params))
+            for (pid, w), params in zip(
+                self.graph.workers.items(), self.graph.parameters().values(), strict=True
+            )
+        }
+
+    def processor_parameters(self) -> dict[str, dict[str, Any]]:
+        """Current parameters of every running processor."""
+        return {} if self.graph is None else self.graph.parameters()
 
     @property
     def replay_control(self) -> ReplayControl | None:
@@ -525,6 +628,7 @@ class Experiment:
                 for s in self.bus.stats().subscriptions
             },
             "events": len(self.events),
+            "quality": None if self.quality_summary is None else self.quality_summary.as_dict(),
             "processors": None if self.graph is None else self.graph.stats_dict(),
             "recorder": None
             if self.store is None or self.store.recorder is None
@@ -555,6 +659,11 @@ class Experiment:
             streams=cfg.show,
             image_fps=cfg.image_fps,
             stats_provider=self.stream_stats,
+            bus_stats_provider=lambda: {
+                s.name: {"enqueued": s.enqueued, "delivered": s.delivered, "dropped": s.dropped}
+                for s in self.bus.stats().subscriptions
+                if not s.name.startswith("health:")
+            },
             processor_stats_provider=lambda: {
                 k: v.as_dict() for k, v in self.processor_stats().items()
             },
@@ -591,6 +700,10 @@ class Experiment:
         dash.attach(
             state,
             on_mark=self.mark,
+            on_begin=self.begin,
+            on_end=self.end,
+            on_set_parameters=lambda pid, changes: self.set_parameters(pid, **changes),
+            parameter_forms=self._parameter_forms,
             replay=self.replay_control,
             replay_range_s=rng,
             replay_t0_ns=t0,
@@ -604,9 +717,78 @@ class Experiment:
                 target=lambda: webbrowser.open(dash.url), name="open-browser", daemon=True
             ).start()
 
+    def _start_rerun(self) -> None:
+        from ariastreamlab.dashboard.rerun_sink import RerunSink, rerun_available
+
+        if not rerun_available():
+            self._log.warning(
+                "rerun.unavailable",
+                hint="pip install 'ariastreamlab[rerun]' (dashboard.rerun is set)",
+            )
+            return
+        assert self.session is not None
+        spawn = os.environ.get("ARIASTREAMLAB_RERUN_SPAWN", "1") != "0"
+        self.rerun = RerunSink(
+            self.bus,
+            app_id=f"ariastreamlab/{self.session.session_id[:8]}",
+            spawn=spawn,
+            streams=self.config.dashboard.show,
+            image_fps=self.config.dashboard.image_fps,
+        )
+        try:
+            self.rerun.start()
+        except Exception as exc:
+            self._log.warning("rerun.failed", error=str(exc))
+            self.rerun = None
+
     def _set_dash_state(self, value: str) -> None:
         if self._dash_state is not None:
             self._dash_state.session["state"] = value
+
+    def _build_quality_summary(self) -> QualitySummary:
+        """The end-of-session quality summary (also stored under ``quality/``)."""
+        health = self.health
+        storage = health.snapshot().get("storage", {}) if health is not None else {}
+        recorder = None
+        if self.store is not None and self.store.recorder is not None:
+            recorder = {k: v.__dict__ for k, v in self.store.recorder.stats().items()}
+        warnings: list[str] = []
+        if self.source is not None:
+            warnings.extend(getattr(self.source, "warnings", []) or [])
+        quality = health.snapshot().get("quality") if health is not None else None
+        return build_summary(
+            stream_stats=self.stream_stats(),
+            raw_stream_ids=set(REGISTRY.ids()),
+            bus_subscriptions={
+                s.name: {"enqueued": s.enqueued, "delivered": s.delivered, "dropped": s.dropped}
+                for s in self.bus.stats().subscriptions
+                if not s.name.startswith("health:")
+            },
+            processor_stats=None if self.graph is None else self.graph.stats_dict(),
+            device_quality=quality if isinstance(quality, dict) else None,
+            device_history=None if health is None else health.device_history,
+            recorder_stats=recorder,
+            duration_s=None
+            if self._opened_at is None
+            else round(time.monotonic() - self._opened_at, 1),
+            disk_bytes=storage.get("bytes"),
+            disk_free_bytes=storage.get("free_bytes"),
+            peak_write_rate_bps=None if health is None else round(health.storage_peak_rate_bps),
+            extra_warnings=warnings,
+        )
+
+    @staticmethod
+    def _write_quality_files(directory: Path, summary: QualitySummary) -> None:
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / "summary.json").write_text(
+                json.dumps(summary.as_dict(), indent=2, default=str) + "\n", encoding="utf-8"
+            )
+            (directory / "summary.txt").write_text(summary.text() + "\n", encoding="utf-8")
+        except OSError as exc:
+            get_logger("ariastreamlab.experiment").warning(
+                "quality.summary_unwritable", error=str(exc)
+            )
 
     def _manifest_extra(self) -> dict[str, Any]:
         extra: dict[str, Any] = {}

@@ -10,6 +10,7 @@ the two hooks — it never touches the source or the recorders.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import threading
 import time
@@ -21,6 +22,7 @@ from ariastreamlab.acquisition.base import ReplayControl
 from ariastreamlab.config.models import DashboardConfig
 from ariastreamlab.core.logging import get_logger
 from ariastreamlab.dashboard.state import DashboardState
+from ariastreamlab.monitoring.quality import format_bytes
 
 __all__ = ["Dashboard", "dashboard_available", "get_dashboard"]
 
@@ -31,6 +33,8 @@ Launcher = Callable[..., Any]
 ``stop``, ``config``, ``session_dir`` and the context-manager protocol)."""
 
 MarkHook = Callable[[str, Mapping[str, Any] | None], Any]
+IntervalHook = Callable[[str, Mapping[str, Any] | None], Any]
+"""``begin(name, payload)`` / ``end(name, payload)`` of the running experiment."""
 
 
 def dashboard_available() -> bool:
@@ -47,6 +51,13 @@ class Dashboard:
         self.config = config
         self.state: DashboardState | None = None
         self.on_mark: MarkHook | None = None
+        self.on_begin: IntervalHook | None = None
+        self.on_end: IntervalHook | None = None
+        self.on_set_parameters: Callable[[str, Mapping[str, Any]], Any] | None = None
+        self.parameter_forms: Callable[[], Mapping[str, tuple[Any, Mapping[str, Any]]]] | None = (
+            None
+        )
+        """``processor id → (Parameters model or None, current values)`` of the running graph."""
         self.replay: ReplayControl | None = None
         self.replay_range_s: tuple[float, float] | None = None
         self.replay_t0_ns: int | None = None
@@ -135,6 +146,10 @@ class Dashboard:
         state: DashboardState,
         *,
         on_mark: MarkHook | None = None,
+        on_begin: IntervalHook | None = None,
+        on_end: IntervalHook | None = None,
+        on_set_parameters: Callable[[str, Mapping[str, Any]], Any] | None = None,
+        parameter_forms: Callable[[], Mapping[str, tuple[Any, Mapping[str, Any]]]] | None = None,
         replay: ReplayControl | None = None,
         replay_range_s: tuple[float, float] | None = None,
         replay_t0_ns: int | None = None,
@@ -143,6 +158,10 @@ class Dashboard:
         with self._lock:
             self.state = state
             self.on_mark = on_mark
+            self.on_begin = on_begin
+            self.on_end = on_end
+            self.on_set_parameters = on_set_parameters
+            self.parameter_forms = parameter_forms
             self.replay = replay
             self.replay_range_s = replay_range_s
             self.replay_t0_ns = replay_t0_ns
@@ -154,6 +173,10 @@ class Dashboard:
             if state is not None and self.state is not state:
                 return
             self.on_mark = None
+            self.on_begin = None
+            self.on_end = None
+            self.on_set_parameters = None
+            self.parameter_forms = None
             self.replay = None
 
     # -- server -------------------------------------------------------------------------
@@ -385,6 +408,13 @@ def _fmt(v: Any, digits: int = 1) -> str:
     return str(v)
 
 
+def _phase(payload: Any) -> str:
+    if isinstance(payload, dict) and payload.get("phase") in ("start", "end"):
+        extra = {k: v for k, v in payload.items() if k not in ("phase", "interval", "source")}
+        return f" ({payload['phase']}{', ' + json.dumps(extra) if extra else ''})"
+    return ""
+
+
 def _fmt_t(t_s: float | None) -> str:
     return "host time" if t_s is None else f"{t_s:.2f} s"
 
@@ -486,6 +516,51 @@ def _build_index(dash: Dashboard, ui: Any) -> None:
 
     ui.timer(0.5, refresh_chart)
 
+    # ---- trajectory (poses) --------------------------------------------------------------
+    with ui.card().classes("w-full mx-2 p-2") as traj_card:
+        with ui.row().classes("items-center gap-4"):
+            ui.label("Trajectory").classes("font-bold")
+            traj_label = ui.label("").classes("text-xs opacity-70")
+        traj_chart = ui.echart(
+            {
+                "animation": False,
+                "backgroundColor": "transparent",
+                "tooltip": {"trigger": "item"},
+                "xAxis": {"type": "value", "name": "x (m)", "axisLabel": {"color": "#aaa"}},
+                "yAxis": {"type": "value", "name": "y (m)", "axisLabel": {"color": "#aaa"}},
+                "series": [],
+            }
+        ).classes("w-full h-[300px]")
+        traj_card.visible = False
+
+    def refresh_trajectory() -> None:
+        st = dash.state
+        if st is None:
+            return
+        poses = st.pose_streams()
+        if not poses:
+            traj_card.visible = False
+            return
+        traj_card.visible = True
+        series = []
+        for sid in poses:
+            pts = st.trajectory(sid, last_s=120.0)
+            series.append({"name": sid, "type": "line", "showSymbol": False, "data": pts})
+            if pts:
+                series.append(
+                    {
+                        "name": f"{sid} now",
+                        "type": "scatter",
+                        "symbolSize": 10,
+                        "data": [pts[-1]],
+                    }
+                )
+        traj_label.text = f"{', '.join(poses)} · last 120 s, odometry frame (x, y)"
+        traj_chart.options["series"] = series
+        traj_chart.update()
+
+    ui.timer(1.0, refresh_trajectory)
+
     # ---- health + streams --------------------------------------------------------------
     with ui.row().classes("w-full gap-2 px-2"):
         with ui.card().classes("p-2 min-w-[260px]"):
@@ -514,7 +589,11 @@ def _build_index(dash: Dashboard, ui: Any) -> None:
             )
     with ui.row().classes("w-full gap-2 px-2"):
         with ui.card().classes("p-2 grow"):
-            ui.label("Pipeline").classes("font-bold")
+            with ui.row().classes("items-center gap-2"):
+                ui.label("Pipeline").classes("font-bold")
+                ui.button("parameters", icon="tune", on_click=lambda: _open_parameters()).props(
+                    "flat dense"
+                ).tooltip("Change parameters while running (recorded as a config_change event)")
             proc_table = (
                 ui.table(
                     columns=[
@@ -593,6 +672,21 @@ def _build_index(dash: Dashboard, ui: Any) -> None:
             link_md.content = (
                 f"origin **{sess.get('origin', '?')}**  \nsamples {snap['samples_seen']}"
             )
+        queues = snap.get("app_queues") or {}
+        if queues:
+            dropped = {k: v.get("dropped", 0) for k, v in queues.items() if v.get("dropped")}
+            link_md.content += "  \napp queues: " + (
+                ", ".join(f"`{k}` dropped {v}" for k, v in dropped.items())
+                if dropped
+                else "no drops"
+            )
+        storage = snap["health"].get("storage") or {}
+        if storage:
+            link_md.content += (
+                f"  \nsession on disk **{format_bytes(storage.get('bytes'))}**"
+                f" · writing {format_bytes(storage.get('write_rate_bps'))}/s"
+                f" · free {format_bytes(storage.get('free_bytes'))}"
+            )
         rows = []
         for sid, s in sorted(snap.get("streams", {}).items()):
             rows.append(
@@ -637,7 +731,8 @@ def _build_index(dash: Dashboard, ui: Any) -> None:
         quality_table.rows = qrows
         quality_table.update()
         ev_rows = [
-            f"{_fmt_t(e['t_s']):>10}  {e['kind']:<12} {e['name']}" for e in snap["events"][-15:]
+            f"{_fmt_t(e['t_s']):>10}  {e['kind']:<12} {e['name']}{_phase(e['payload'])}"
+            for e in snap["events"][-15:]
         ]
         events_md.content = "```\n" + ("\n".join(ev_rows) or "(no events yet)") + "\n```"
         rv = dash._replay_view()
@@ -656,30 +751,105 @@ def _build_index(dash: Dashboard, ui: Any) -> None:
         else:
             replay_card.visible = False
 
+    # ---- live parameter changes ----------------------------------------------------------
+    with ui.dialog() as params_dialog, ui.card().classes("min-w-[420px]"):
+        ui.label("Processor parameters").classes("font-bold")
+        params_body = ui.column().classes("w-full gap-2")
+
+    def _open_parameters() -> None:
+        from ariastreamlab.dashboard.designer import fields_of
+        from ariastreamlab.dashboard.designer_ui import field_widget
+
+        forms = dash.parameter_forms() if dash.parameter_forms is not None else {}
+        setter = dash.on_set_parameters
+        params_body.clear()
+        with params_body:
+            if not forms or setter is None:
+                ui.label("no running processors").classes("opacity-70")
+                forms = {}
+            apply_fn = setter or (lambda *_: {})
+            for pid, (model, current) in forms.items():
+                with ui.expansion(pid, value=len(forms) <= 3).classes("w-full"):
+                    if model is None or not fields_of(model):
+                        ui.label("no declared parameters").classes("text-xs opacity-70")
+                        continue
+                    draft: dict[str, Any] = dict(current)
+                    with ui.row().classes("items-end gap-3 flex-wrap"):
+                        for spec in fields_of(model):
+                            field_widget(ui, spec, draft, lambda: None)
+
+                    def _apply(
+                        pid: str = pid, draft: dict[str, Any] = draft, current: Any = current
+                    ) -> None:
+                        changes = {k: v for k, v in draft.items() if current.get(k) != v}
+                        if not changes:
+                            ui.notify("nothing changed")
+                            return
+                        try:
+                            new = apply_fn(pid, changes)
+                        except Exception as exc:
+                            ui.notify(str(exc), type="negative")
+                            return
+                        current.clear()
+                        current.update(new)
+                        ui.notify(f"{pid}: {changes} applied and recorded", type="positive")
+
+                    ui.button("apply", on_click=_apply, icon="check").props("dense")
+        params_dialog.open()
+
     # ---- markers + replay --------------------------------------------------------------
     with ui.row().classes("w-full gap-2 px-2 pb-4"):
         with ui.card().classes("p-2 grow"):
             ui.label("Markers").classes("font-bold")
-            with ui.row().classes("items-center gap-2"):
-                marker_name = ui.input("name", value="trial_start").classes("w-[200px]")
+            with ui.row().classes("items-end gap-2 flex-wrap"):
+                marker_name = ui.input("name", value="trial").classes("w-[160px]")
+                marker_payload = ui.input("payload (JSON)", placeholder='{"trial": 3}').classes(
+                    "w-[220px]"
+                )
 
-                def _mark() -> None:
-                    hook = dash.on_mark
+                def _payload() -> dict[str, Any] | None:
+                    text = (marker_payload.value or "").strip()
+                    if not text:
+                        return {"source": "dashboard"}
+                    try:
+                        data = json.loads(text)
+                    except ValueError:
+                        ui.notify("payload must be a JSON object", type="warning")
+                        return None
+                    if not isinstance(data, dict):
+                        ui.notify("payload must be a JSON object", type="warning")
+                        return None
+                    return {**data, "source": "dashboard"}
+
+                def _fire(kind: str) -> None:
+                    hook = {"mark": dash.on_mark, "begin": dash.on_begin, "end": dash.on_end}[kind]
                     if hook is None:
                         ui.notify("no running session", type="warning")
                         return
+                    payload = _payload()
+                    if payload is None:
+                        return
                     name = (marker_name.value or "marker").strip()
-                    hook(name, {"source": "dashboard"})
-                    ui.notify(f"marker {name!r} added")
+                    try:
+                        hook(name, payload)
+                    except ValueError as exc:  # end() without a begin()
+                        ui.notify(str(exc), type="warning")
+                        return
+                    ui.notify(f"{kind} {name!r}")
 
-                ui.button("mark", on_click=_mark, icon="flag")
-                for quick in ("trial_start", "trial_end", "note"):
-                    ui.button(
-                        quick,
-                        on_click=lambda q=quick: (dash.on_mark or (lambda *_: None))(
-                            q, {"source": "dashboard"}
-                        ),
-                    ).props("flat dense")
+                ui.button("mark", on_click=lambda: _fire("mark"), icon="flag")
+                ui.button("begin", on_click=lambda: _fire("begin"), icon="play_arrow").props(
+                    "flat dense"
+                ).tooltip("Open an interval with this name (a trial, a condition…)")
+                ui.button("end", on_click=lambda: _fire("end"), icon="stop").props(
+                    "flat dense"
+                ).tooltip("Close the most recent open interval with this name")
+                ui.button(
+                    "note",
+                    on_click=lambda: (dash.on_mark or (lambda *_: None))(
+                        "note", {"source": "dashboard"}
+                    ),
+                ).props("flat dense")
             events_md = ui.markdown("")
         with ui.card().classes("p-2 min-w-[360px]") as replay_card:
             ui.label("Replay").classes("font-bold")

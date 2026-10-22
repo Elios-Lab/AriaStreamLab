@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -798,3 +799,97 @@ def test_experiment_runs_graph_and_stores_provenance(tmp_path: Path) -> None:
     assert rows[0].data.value == pytest.approx(9.8, abs=1.0)
     chained = list(reader.iter_stream("accel_norm_10hz"))
     assert 9 <= len(chained) <= 11
+
+
+def test_live_parameter_change_is_applied_and_recorded(tmp_path) -> None:
+    from ariastreamlab.api import Experiment
+    from ariastreamlab.config.loader import load_dict
+    from ariastreamlab.core.errors import ConfigError
+
+    cfg = load_dict(
+        {
+            "experiment": {"name": "live_params"},
+            "storage": {"root": str(tmp_path)},
+            "streams": {"imu": {}},
+            "mock": {"realtime": True, "seed": 4},
+            "processors": [
+                {
+                    "id": "motion",
+                    "type": "imu.motion_detector",
+                    "inputs": ["imu_left"],
+                    "outputs": ["motion"],
+                    "parameters": {"threshold": 0.15},
+                },
+                {
+                    "id": "mag",
+                    "type": "imu.magnitude",
+                    "inputs": ["imu_right"],
+                    "outputs": ["mag"],
+                },
+            ],
+        }
+    )
+    import threading
+
+    exp = Experiment(cfg, mock=True, duration_s=1.2)
+    with exp:
+        t = threading.Thread(target=exp.run, daemon=True)
+        t.start()
+        import time
+
+        time.sleep(0.4)
+        assert exp.processor_parameters()["motion"]["threshold"] == 0.15
+        new = exp.set_parameters("motion", threshold=0.5, emit="changes")
+        assert new["threshold"] == 0.5 and new["emit"] == "changes"
+        worker = exp.graph.workers["motion"]  # type: ignore[union-attr]
+        assert worker.processor.params.threshold == 0.5
+        assert worker.processor._release == 0.5 * 0.7  # the cached value followed the change
+        with pytest.raises(ConfigError, match="threshold"):
+            exp.set_parameters("motion", threshold=-1)
+        with pytest.raises(ConfigError, match="no processor"):
+            exp.set_parameters("nope", x=1)
+        assert exp.set_parameters("mag", of="gyro")["of"] == "gyro"
+        t.join(5)
+        root = exp.session_dir
+    changes = [e for e in exp.events.all() if e.kind == "config_change"]
+    assert [e.name for e in changes] == [
+        "processors.motion.parameters",
+        "processors.mag.parameters",
+    ]
+    assert changes[0].payload["changes"] == {"threshold": 0.5, "emit": "changes"}
+    assert changes[0].payload["parameters"]["threshold"] == 0.5
+    assert changes[0].timestamp_source == "estimated"  # device time, like every event
+    # the frozen configuration and the manifest keep the start-up values
+    import json
+
+    manifest = json.loads((root / "manifest.json").read_text())  # type: ignore[union-attr]
+    started = {p["id"]: p["parameters"] for p in manifest["processors"]}
+    assert started["motion"]["threshold"] == 0.15
+    from ariastreamlab.storage.reader import SessionReader
+
+    stored = SessionReader(root).events(kind="config_change")  # type: ignore[arg-type]
+    assert len(stored) == 2 and stored[0].payload["changes"]["threshold"] == 0.5
+
+
+def test_queue_size_default_follows_the_primary_rate() -> None:
+    from ariastreamlab.config.models import ExecutionConfig
+
+    ex = ExecutionConfig()
+    assert ex.queue_size is None
+    assert ex.effective_queue_size(800) == 400  # IMU: half a second
+    assert ex.effective_queue_size(10) == 64  # cameras: the floor
+    assert ex.effective_queue_size(None) == 64  # derived primary: unknown rate
+    assert ex.effective_queue_size(10_000) == 2000  # the cap
+    assert ExecutionConfig(queue_size=5).effective_queue_size(800) == 5
+    cfg = _graph_config(
+        Path(tempfile.mkdtemp()),
+        [
+            {"id": "m", "type": "imu.magnitude", "inputs": ["imu_left"], "outputs": ["m"]},
+            {"id": "r", "type": "image.grayscale", "inputs": ["rgb"], "outputs": ["g"]},
+            {"id": "d", "type": "generic.passthrough", "inputs": ["m"], "outputs": ["p"]},
+        ],
+    )
+    graph = ProcessingGraph(cfg, EventBus())
+    assert graph.workers["m"].queue_size == 400
+    assert graph.workers["r"].queue_size == 64
+    assert graph.workers["d"].queue_size == 64

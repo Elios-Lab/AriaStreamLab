@@ -74,7 +74,7 @@ def test_designer_streams_and_processors() -> None:
     p = d.doc["processors"][i]
     assert p["id"] == "magnitude" and p["inputs"] == ["imu_left"] and p["outputs"] == ["magnitude"]
     assert p["parameters"] == {"of": "accel", "remove_gravity": False}
-    assert p["execution"]["queue_size"] == 64
+    assert p["execution"]["queue_size"] is None  # auto: half a second of the primary input
     j = d.add_processor("imu.magnitude")
     assert d.doc["processors"][j]["id"] == "magnitude_2"
     assert d.doc["processors"][j]["outputs"] == ["magnitude_2"]  # unique output too

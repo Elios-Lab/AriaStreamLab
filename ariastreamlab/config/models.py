@@ -132,12 +132,13 @@ class StreamConfig(BaseModel):
 class ExecutionConfig(_Strict):
     """How a processor is scheduled."""
 
-    queue_size: int = Field(
-        default=64,
+    queue_size: int | None = Field(
+        default=None,
         ge=1,
         le=10_000,
-        description="Samples waiting for the processor before drop_policy applies "
-        "(64 ≈ 80 ms of IMU; use 1–2 with 'latest' for images)",
+        description="Samples waiting for the processor before drop_policy applies. "
+        "null ⇒ half a second of the primary input (64 at least, 2000 at most: 400 for an "
+        "800 Hz IMU, 64 for a 10 Hz camera); use 1–2 with 'latest' for images",
     )
     drop_policy: DropPolicy = DropPolicy.DROP_OLDEST
     join: Literal["latest", "nearest", "previous"] = Field(
@@ -148,6 +149,14 @@ class ExecutionConfig(_Strict):
     isolate: Literal["thread", "process"] = Field(
         default="thread", description="'process' is reserved for a later phase"
     )
+
+    def effective_queue_size(self, primary_rate_hz: float | None) -> int:
+        """``queue_size`` or the rate-aware default (half a second, 64…2000)."""
+        if self.queue_size is not None:
+            return self.queue_size
+        if primary_rate_hz is None or primary_rate_hz <= 0:
+            return 64
+        return int(min(2000, max(64, round(0.5 * primary_rate_hz))))
 
     @field_validator("drop_policy")
     @classmethod

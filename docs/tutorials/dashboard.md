@@ -19,13 +19,15 @@ ARIASTREAMLAB_DASHBOARD=0 ariastreamlab replay … --speed 0      # a whole shel
 |---|---|---|
 | header | experiment / participant / origin (`live`, `mock`, `replay`), samples seen, seconds of data, session state | `Experiment` |
 | images | every image stream in `dashboard.show` (default: all enabled), downscaled to 640 px at `dashboard.image_fps`; a circle marks each derived gaze point (`gaze.project_to_rgb` output) on the RGB frame | `raw.rgb`, `raw.et_*`, `raw.slam_*`, `derived.*` |
-| Signals | any scalar channel, chosen in the multi-select: IMU axes, gaze yaw/pitch/depth, barometer, magnetometer, hand confidences, every numeric field of a processor's output; a window slider (2–60 s); channels are thinned to 100 Hz for display and keep the last 60 s | `raw.*`, `derived.*` |
+| Signals | any scalar channel, chosen in the multi-select: IMU axes, gaze yaw/pitch/depth, barometer, magnetometer, hand confidences, audio level (dBFS), every numeric field of a processor's output; a window slider (2–60 s); channels are thinned to 100 Hz for display and keep the last 60 s | `raw.*`, `derived.*` |
 | Device | battery, charging, skin temperature, thermal mitigation, Wi-Fi (live sessions) | `health.device` |
-| Link | connections, data path (`usb` / `wifi`), SDK queue depths, TicSync (live); origin and sample count otherwise | `health.link` |
+| Link | connections, data path (`usb` / `wifi`), SDK queue depths, TicSync (live); origin and sample count otherwise; app-queue drops per bus subscriber; session size on disk, write rate, free disk | `health.link`, `health.storage`, bus stats |
 | Streams | received / effective Hz / nominal Hz / out-of-order / transport drops per stream | `StatsTracker` |
 | Pipeline | per processor: fired, outputs, exec ms, latency ms, queue drops, errors | `ProcessingGraph.stats()` |
 | Device quality | the device's own per-sensor counters (live, every 10 s) | `health.quality` |
-| Markers | a name field, a *mark* button and shortcuts; the last 15 events (markers, `device_state`, session events); a marker made from the page is `Experiment.mark(name)` — same row in `events/events.parquet`, same device-time estimate | `events.*` |
+| Trajectory | x/y of every pose stream (`vio`…) over the last 120 s, odometry frame, with the current position marked | `raw.vio` |
+| Pipeline → *parameters* | a dialog with every running processor's parameters (forms generated from its `Parameters` model); *apply* calls `Experiment.set_parameters()`, which validates, swaps the parameters on the worker and records a `config_change` event — the frozen `experiment.json` is untouched | `ProcessingGraph` |
+| Markers | name + optional JSON payload; *mark* (a point event), *begin* / *end* (an interval, paired by id in `inspect --events` and `SessionReader.intervals()`), *note*; the last 15 events with their phase | `events.*` |
 | header | links to the *designer* (`/design`, below) | |
 | Replay | pause / resume, speed (0.25–4×), a seek slider over the recording (shown for the `session` and `tools` replay backends; the `sdk` backend runs Meta's engine and has no controls) | `ReplayControl` |
 

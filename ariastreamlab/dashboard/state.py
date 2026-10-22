@@ -22,6 +22,7 @@ import numpy as np
 
 from ariastreamlab.core.bus import DropPolicy, EventBus, Subscription
 from ariastreamlab.core.payloads import (
+    AudioPayload,
     BarometerPayload,
     GazePayload,
     HandPayload,
@@ -98,6 +99,15 @@ def channels_of(data: Any) -> dict[str, tuple[float, str]]:
             "left_conf": (data.left_confidence or 0.0, ""),
             "right_conf": (data.right_confidence or 0.0, ""),
         }
+    if isinstance(data, AudioPayload):
+        samples = np.asarray(data.samples, dtype=np.float64)
+        if samples.size == 0:
+            return {}
+        if np.issubdtype(np.asarray(data.samples).dtype, np.integer):
+            samples = samples / 32768.0
+        rms = float(np.sqrt(np.mean(samples**2)))
+        level_db = 20 * math.log10(rms) if rms > 0 else -120.0
+        return {"level_db": (max(-120.0, level_db), "dBFS")}
     if isinstance(data, (int, float)) and not isinstance(data, bool):
         return {"value": (float(data), "")}
     if isinstance(data, Mapping):
@@ -152,6 +162,7 @@ class DashboardState:
         max_channel_hz: float = 100.0,
         stats_provider: Callable[[], Mapping[str, Any]] | None = None,
         processor_stats_provider: Callable[[], Mapping[str, Any]] | None = None,
+        bus_stats_provider: Callable[[], Mapping[str, Any]] | None = None,
     ) -> None:
         self._bus = bus
         self._wanted = None if streams is None else set(streams)
@@ -160,10 +171,12 @@ class DashboardState:
         self._min_channel_dt_ns = int(1e9 / max_channel_hz) if max_channel_hz > 0 else 0
         self._stats_provider = stats_provider
         self._proc_provider = processor_stats_provider
+        self._bus_provider = bus_stats_provider
         self._lock = threading.Lock()
         self.images: dict[str, ImageFrame] = {}
         self.channels: dict[str, Channel] = {}
         self.gaze_points: dict[str, dict[str, float]] = {}
+        self._pose_streams: set[str] = set()
         self.health: dict[str, Any] = {}
         self.events: deque[Event] = deque(maxlen=200)
         self.t0_ns: int | None = None
@@ -265,6 +278,9 @@ class DashboardState:
                     "valid": float(bool(data.get("valid", True))),
                     "in_image": float(bool(data.get("in_image", True))),
                 }
+        if isinstance(data, PosePayload):
+            with self._lock:
+                self._pose_streams.add(sid)
         for name, (value, unit) in channels_of(data).items():
             if not math.isfinite(value):
                 continue
@@ -303,7 +319,9 @@ class DashboardState:
             key = {
                 "DeviceHealth": "device",
                 "QualityStats": "quality",
-                "dict": "link" if "connections" in payload else "pipeline",
+                "dict": "link"
+                if "connections" in payload
+                else ("storage" if "write_rate_bps" in payload else "pipeline"),
             }.get(kind, kind.lower())
             self.health[key] = {"at": time.monotonic(), **payload}
 
@@ -365,7 +383,34 @@ class DashboardState:
                 out["processors"] = {k: _jsonable(v) for k, v in self._proc_provider().items()}
             except Exception:
                 out["processors"] = {}
+        if self._bus_provider is not None:
+            try:
+                out["app_queues"] = {k: _jsonable(v) for k, v in self._bus_provider().items()}
+            except Exception:
+                out["app_queues"] = {}
         return out
+
+    def trajectory(self, stream_id: str, last_s: float | None = None) -> list[list[float]]:
+        """``[[x, y], …]`` of a pose stream's translation (for the trajectory plot)."""
+        with self._lock:
+            xs = self.channels.get(f"{stream_id}/x")
+            ys = self.channels.get(f"{stream_id}/y")
+            if xs is None or ys is None:
+                return []
+            cutoff = None
+            if last_s is not None and self.last_device_ns is not None:
+                cutoff = self.last_device_ns - int(last_s * 1e9)
+            pts = [
+                [x, y]
+                for t, x, y in zip(xs.t_ns, xs.values, ys.values, strict=False)
+                if cutoff is None or t >= cutoff
+            ]
+            return pts
+
+    def pose_streams(self) -> list[str]:
+        """Streams whose payload is a pose (``vio``, ``vio_high_frequency``…)."""
+        with self._lock:
+            return sorted(self._pose_streams)
 
     def series(
         self, keys: Iterable[str], last_s: float | None = None

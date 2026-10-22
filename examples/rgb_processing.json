@@ -1,0 +1,47 @@
+{
+  "extends": "preset:base",
+  "experiment": {
+    "name": "rgb_pipeline",
+    "participant": "P001",
+    "description": "RGB + a realtime processing pipeline: downscale, grayscale, head-motion gate from the IMU"
+  },
+  "streams": {
+    "rgb": { "fps": 10 },
+    "imu": {}
+  },
+  "processors": [
+    {
+      "id": "rgb_small",
+      "type": "image.resize",
+      "inputs": ["rgb"],
+      "outputs": ["rgb_small"],
+      "parameters": { "width": 640, "height": 480 },
+      "execution": { "queue_size": 2, "drop_policy": "latest" },
+      "save_output": true
+    },
+    {
+      "id": "rgb_gray",
+      "type": "image.grayscale",
+      "inputs": ["rgb_small"],
+      "outputs": ["rgb_gray"],
+      "execution": { "queue_size": 2, "drop_policy": "latest" },
+      "save_output": false
+    },
+    {
+      "id": "head_motion",
+      "type": "imu.motion_detector",
+      "inputs": ["imu_left"],
+      "outputs": ["head_motion"],
+      "parameters": { "threshold": 0.15, "emit": "changes" }
+    },
+    {
+      "id": "imu_smooth",
+      "type": "imu.lowpass",
+      "inputs": ["imu_left"],
+      "outputs": ["imu_left_lp"],
+      "parameters": { "cutoff_hz": 5 }
+    }
+  ],
+  "dashboard": { "show": ["rgb", "rgb_gray", "imu_left", "imu_left_lp", "head_motion"] },
+  "storage": { "image_format": "mp4" }
+}

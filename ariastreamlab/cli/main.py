@@ -284,7 +284,8 @@ def inspect_config(
                 ", ".join(p.outputs),
                 f"{p.execution.join}"
                 + (f"/{p.execution.tolerance_ms:g}ms" if len(p.inputs) > 1 else ""),
-                f"{p.execution.drop_policy.value}/{p.execution.queue_size}",
+                f"{p.execution.drop_policy.value}/"
+                f"{'auto' if p.execution.queue_size is None else p.execution.queue_size}",
                 "yes" if p.save_output else ("off" if not p.enabled else "no"),
             )
         console.print(table)
@@ -456,6 +457,9 @@ def inspect(
         bool, typer.Option("--repair", help="Rebuild the timeline and mark a crashed session")
     ] = False,
     json_out: Annotated[bool, typer.Option("--json", help="Print JSON")] = False,
+    events: Annotated[
+        bool, typer.Option("--events", help="List the events (markers, intervals, device state)")
+    ] = False,
 ) -> None:
     """Show what a session directory contains (works on crashed sessions too)."""
     from ariastreamlab.storage.inspect import inspect_session, summary_as_dict
@@ -464,6 +468,9 @@ def inspect(
         s = inspect_session(path, repair=repair)
     except AriaStreamLabError as exc:
         _fail(exc)
+        return
+    if events:
+        _print_events(s.root, json_out)
         return
     if json_out:
         console.print_json(json.dumps(summary_as_dict(s), default=str))
@@ -497,10 +504,89 @@ def inspect(
             "" if x.duration_s is None else f"{x.duration_s:.1f}",
         )
     console.print(table)
+    if m.quality:
+        from ariastreamlab.monitoring.quality import QualitySummary
+
+        console.print("[bold]quality summary[/]")
+        console.print(
+            escape(QualitySummary.from_dict(m.quality).text()), highlight=False, soft_wrap=True
+        )
+    elif m.warnings:
+        for w in m.warnings:
+            console.print(f"[yellow]warning:[/] {escape(w)}")
     for pb in s.problems:
         console.print(f"[yellow]problem:[/] {pb}")
     if s.repaired:
         console.print("[green]repaired[/]")
+
+
+def _print_events(root: Path, json_out: bool) -> None:
+    from ariastreamlab.storage.reader import SessionReader
+
+    reader = SessionReader(root)
+    evs = reader.events()
+    t0 = min((e.device_timestamp_ns for e in evs), default=0)
+    first = reader.time_range()
+    if first is not None:
+        t0 = first[0]
+    if json_out:
+        print(
+            json.dumps(
+                {
+                    "events": [
+                        {
+                            "t_s": (e.device_timestamp_ns - t0) / 1e9,
+                            "device_timestamp_ns": e.device_timestamp_ns,
+                            "kind": e.kind,
+                            "name": e.name,
+                            "timestamp_source": e.timestamp_source,
+                            "payload": dict(e.payload),
+                        }
+                        for e in evs
+                    ],
+                    "intervals": [
+                        {
+                            "name": i.name,
+                            "id": i.interval_id,
+                            "start_s": (i.start_ns - t0) / 1e9,
+                            "end_s": None if i.end_ns is None else (i.end_ns - t0) / 1e9,
+                            "duration_s": i.duration_s,
+                            "payload": dict(i.payload),
+                        }
+                        for i in reader.intervals()
+                    ],
+                },
+                default=str,
+                indent=2,
+            )
+        )
+        return
+    table = Table(title=f"Events ({len(evs)}) — seconds from the first sample")
+    for col in ("t (s)", "kind", "name", "time", "payload"):
+        table.add_column(col)
+    for e in evs:
+        table.add_row(
+            f"{(e.device_timestamp_ns - t0) / 1e9:.3f}",
+            e.kind,
+            e.name,
+            e.timestamp_source,
+            escape(e.payload_json())[:80],
+        )
+    console.print(table)
+    intervals = reader.intervals()
+    if intervals:
+        table = Table(title=f"Intervals ({len(intervals)})")
+        for col in ("name", "start (s)", "end (s)", "duration (s)", "payload"):
+            table.add_column(col)
+        for i in intervals:
+            table.add_row(
+                i.name,
+                f"{(i.start_ns - t0) / 1e9:.3f}",
+                "open" if i.end_ns is None else f"{(i.end_ns - t0) / 1e9:.3f}",
+                "" if i.duration_s is None else f"{i.duration_s:.3f}",
+                escape(json.dumps(dict(i.payload), default=str))[:80],
+            )
+        console.print(table)
 
 
 def _apply_dashboard_port(exp: Experiment, port: int | None) -> None:
@@ -539,8 +625,11 @@ def _drive(exp: Experiment, report_every: float, json_summary: bool) -> None:
             finally:
                 stop_report.set()
             _print_rates(exp, out)
-            if json_summary:
-                print(json.dumps(exp.summary(), default=str, indent=2))
+        if exp.quality_summary is not None:
+            out.print("[bold]quality summary[/]")
+            out.print(escape(exp.quality_summary.text()), highlight=False, soft_wrap=True)
+        if json_summary:
+            print(json.dumps(exp.summary(), default=str, indent=2))
     except AriaStreamLabError as exc:
         _fail(exc)
 

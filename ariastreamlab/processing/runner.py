@@ -5,12 +5,15 @@ from __future__ import annotations
 import math
 import threading
 from collections import Counter, deque
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from pydantic import ValidationError
+
 from ariastreamlab.config.models import ProcessorConfig
 from ariastreamlab.core.bus import DropPolicy, EventBus, Subscription
+from ariastreamlab.core.errors import ConfigError
 from ariastreamlab.core.logging import get_logger
 from ariastreamlab.core.sample import AnySample, DerivedSample, Sample
 from ariastreamlab.processing.base import Emit, Inputs, Output, Processor, ProcessorContext
@@ -108,6 +111,11 @@ class ProcessorWorker:
         self.primary = cfg.inputs[0]
         self.secondaries = tuple(cfg.inputs[1:])
         self.outputs = frozenset(cfg.outputs)
+        primary_rate = (
+            ctx.registry.get(self.primary).nominal_rate_hz if self.primary in ctx.registry else None
+        )
+        self.queue_size = cfg.execution.effective_queue_size(primary_rate)
+        """Primary queue length: ``execution.queue_size`` or half a second of the input."""
         self._tolerance_ns = int(cfg.execution.tolerance_ms * 1e6)
         self._join = cfg.execution.join
         self._primary_sub: Subscription[Any] | None = None
@@ -144,7 +152,7 @@ class ProcessorWorker:
         # dropping, so re-processing a recording touches every sample
         self._primary_sub = self.bus.subscribe(
             f"*.{self.primary}",
-            maxsize=max(ex.queue_size, self.LOSSLESS_QUEUE) if self.lossless else ex.queue_size,
+            maxsize=max(self.queue_size, self.LOSSLESS_QUEUE) if self.lossless else self.queue_size,
             policy=DropPolicy.BLOCK if self.lossless else ex.drop_policy,
             name=f"proc:{self.id}:{self.primary}",
         )
@@ -255,7 +263,7 @@ class ProcessorWorker:
         # reached the primary's timestamp (or a bounded host time passes), so the result
         # depends on the data, not on which thread delivered first
         self._pending.append((item, self.clock.now_ns()))
-        limit = max(self.cfg.execution.queue_size, self.LOSSLESS_QUEUE if self.lossless else 1)
+        limit = max(self.queue_size, self.LOSSLESS_QUEUE if self.lossless else 1)
         while len(self._pending) > limit:
             self._pending.popleft()
             self._pending_dropped += 1
@@ -391,6 +399,36 @@ class ProcessorWorker:
             )
 
     # -- stats --------------------------------------------------------------------------
+    def update_parameters(self, changes: Mapping[str, Any]) -> dict[str, Any]:
+        """Apply a live parameter change; returns the full new parameters as a dict.
+
+        Validated against the processor's ``Parameters`` model (a ``ConfigError`` names the
+        problem); the processor's ``on_parameters_changed`` hook runs afterwards.
+        """
+        old = self.ctx.parameters
+        model = type(self.processor).Parameters
+        if model is not None:
+            current = old.model_dump() if hasattr(old, "model_dump") else dict(old)
+            try:
+                new: Any = model.model_validate({**current, **changes})
+            except ValidationError as exc:
+                lines = [
+                    f"{'.'.join(str(x) for x in e['loc']) or '<root>'}: {e['msg']}"
+                    for e in exc.errors()
+                ]
+                raise ConfigError(
+                    f"processors[{self.cfg.id}].parameters: " + "; ".join(lines),
+                    hint=f"accepted parameters: {', '.join(model.model_fields)}",
+                ) from exc
+            as_dict = dict(new.model_dump(mode="json"))
+        else:
+            new = {**dict(old), **changes}
+            as_dict = dict(new)
+        self.ctx.parameters = new
+        self.processor.on_parameters_changed(old, new)
+        log.info("processor.parameters_changed", processor=self.cfg.id, changes=dict(changes))
+        return as_dict
+
     def stats(self) -> ProcessorStats:
         """A snapshot of the counters."""
         with self._lock:

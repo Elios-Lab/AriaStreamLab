@@ -11,7 +11,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import threading
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -37,6 +37,68 @@ class Event:
     def payload_json(self) -> str:
         """Payload serialised for storage."""
         return json.dumps(self.payload, default=str, sort_keys=True)
+
+
+@dataclass(frozen=True, slots=True)
+class Interval:
+    """A ``begin``/``end`` pair of marker events (a trial, a condition, a stimulus…)."""
+
+    name: str
+    interval_id: str
+    start_ns: int
+    end_ns: int | None
+    payload: Mapping[str, Any]
+    """Start payload updated with the end payload (``phase``/``interval`` keys removed)."""
+    start_source: str = "estimated"
+    end_source: str | None = None
+
+    @property
+    def duration_s(self) -> float | None:
+        """Length in seconds (``None`` while open)."""
+        return None if self.end_ns is None else (self.end_ns - self.start_ns) / 1e9
+
+
+def pair_intervals(events: Iterable[Event], name: str | None = None) -> list[Interval]:
+    """Match ``begin`` and ``end`` marker events (by ``payload["interval"]``) into intervals."""
+    starts: dict[str, Event] = {}
+    out: list[Interval] = []
+    for e in events:
+        if e.kind != "marker" or not isinstance(e.payload, Mapping):
+            continue
+        phase = e.payload.get("phase")
+        iid = e.payload.get("interval")
+        if phase not in ("start", "end") or not isinstance(iid, str):
+            continue
+        if name is not None and e.name != name:
+            continue
+        if phase == "start":
+            starts[iid] = e
+            continue
+        start = starts.pop(iid, None)
+        if start is None:
+            continue  # an end without a start (e.g. a crash before the marker landed)
+        payload = {k: v for k, v in start.payload.items() if k not in ("phase", "interval")}
+        payload.update({k: v for k, v in e.payload.items() if k not in ("phase", "interval")})
+        out.append(
+            Interval(
+                start.name,
+                iid,
+                start.device_timestamp_ns,
+                e.device_timestamp_ns,
+                payload,
+                start.timestamp_source,
+                e.timestamp_source,
+            )
+        )
+    for iid, start in starts.items():  # still open
+        payload = {k: v for k, v in start.payload.items() if k not in ("phase", "interval")}
+        out.append(
+            Interval(
+                start.name, iid, start.device_timestamp_ns, None, payload, start.timestamp_source
+            )
+        )
+    out.sort(key=lambda i: i.start_ns)
+    return out
 
 
 class DeviceTimeEstimator:
@@ -80,6 +142,12 @@ class DeviceTimeEstimator:
         """True once at least one sample has been observed."""
         return self._offset_ns is not None
 
+    @property
+    def offset_ns(self) -> int | None:
+        """Current ``host − device`` estimate (``None`` before any sample)."""
+        with self._lock:
+            return self._offset_ns
+
 
 class EventLog:
     """In-memory event list that also publishes every event on ``events.<kind>``."""
@@ -92,14 +160,67 @@ class EventLog:
         self._clock = clock or HostClock()
         self._lock = threading.Lock()
         self._events: list[Event] = []
+        self._open: dict[str, str] = {}
+        self._interval_seq = 0
 
     def mark(
-        self, name: str, payload: Mapping[str, Any] | None = None, *, kind: EventKind = "marker"
+        self,
+        name: str,
+        payload: Mapping[str, Any] | None = None,
+        *,
+        kind: EventKind = "marker",
+        at_ns: int | None = None,
     ) -> Event:
-        """Create an event stamped with the current host time (device time estimated)."""
+        """Create an event stamped *now* (device time estimated) or at an explicit device time.
+
+        ``at_ns`` is a device timestamp — typically the ``device_timestamp_ns`` of the sample
+        the annotation refers to — and makes the event exact (``timestamp_source="device"``).
+        """
         host_ns = self._clock.now_ns()
+        if at_ns is not None:
+            return self.add(Event(kind, name, int(at_ns), host_ns, dict(payload or {}), "device"))
         device_ns, how = self._estimator.device_from_host(host_ns)
         return self.add(Event(kind, name, device_ns, host_ns, dict(payload or {}), how))
+
+    def begin(
+        self, name: str, payload: Mapping[str, Any] | None = None, *, at_ns: int | None = None
+    ) -> str:
+        """Open an interval (a trial, a condition…); returns its id for :meth:`end`."""
+        with self._lock:
+            self._interval_seq += 1
+            iid = f"{name}-{self._interval_seq}"
+            self._open[iid] = name
+        self.mark(name, {**dict(payload or {}), "phase": "start", "interval": iid}, at_ns=at_ns)
+        return iid
+
+    def end(
+        self,
+        name_or_id: str,
+        payload: Mapping[str, Any] | None = None,
+        *,
+        at_ns: int | None = None,
+    ) -> str:
+        """Close an interval by id, or the most recently opened one with that name."""
+        with self._lock:
+            if name_or_id in self._open:
+                iid = name_or_id
+            else:
+                candidates = [i for i, n in self._open.items() if n == name_or_id]
+                if not candidates:
+                    raise ValueError(f"no open interval named {name_or_id!r}")
+                iid = candidates[-1]
+            name = self._open.pop(iid)
+        self.mark(name, {**dict(payload or {}), "phase": "end", "interval": iid}, at_ns=at_ns)
+        return iid
+
+    def open_intervals(self) -> dict[str, str]:
+        """``interval id → name`` of the intervals not yet ended."""
+        with self._lock:
+            return dict(self._open)
+
+    def intervals(self, name: str | None = None) -> list[Interval]:
+        """Paired intervals so far (open ones have ``end_ns=None``)."""
+        return pair_intervals(self.all(), name)
 
     def add(self, event: Event) -> Event:
         """Append an already-built event and publish it."""

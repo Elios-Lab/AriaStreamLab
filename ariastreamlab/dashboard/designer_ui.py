@@ -24,14 +24,14 @@ from ariastreamlab.config.models import (
 )
 from ariastreamlab.dashboard.designer import Designer, FieldSpec, fields_of
 
-__all__ = ["build_design_page"]
+__all__ = ["build_design_page", "field_widget"]
 
 
 def _label(spec: FieldSpec) -> str:
     return spec.name.replace("_", " ")
 
 
-def _field_widget(
+def field_widget(
     ui: Any, spec: FieldSpec, container: dict[str, Any], changed: Callable[[], None]
 ) -> Any:
     """One widget for one scalar field, writing into ``container[spec.name]``."""
@@ -115,7 +115,7 @@ def _model_form(
     if scalars:
         with ui.row().classes("items-end gap-3 flex-wrap"):
             for spec in scalars:
-                _field_widget(ui, spec, container, changed)
+                field_widget(ui, spec, container, changed)
     for spec in nested:
         sub = container.setdefault(spec.name, dict(spec.default or {}))
         with ui.expansion(_label(spec)).classes("w-full"):
@@ -375,7 +375,7 @@ def build_design_page(dash: Any, ui: Any) -> None:
                                 with ui.row().classes("items-end gap-3 w-full flex-wrap"):
                                     ui.label("parameters").classes("text-xs opacity-70 w-full")
                                     for spec in entry.parameters:
-                                        _field_widget(ui, spec, p["parameters"], changed)
+                                        field_widget(ui, spec, p["parameters"], changed)
                             with ui.expansion("execution").classes("w-full text-sm"):
                                 _model_form(ui, ExecutionConfig, p["execution"], changed)
 

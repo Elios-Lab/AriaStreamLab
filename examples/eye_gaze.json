@@ -1,0 +1,24 @@
+{
+  "extends": "preset:gaze_experiment",
+  "experiment": {
+    "name": "gaze_study",
+    "participant": "P001",
+    "description": "Eye-gaze experiment: RGB + eye cameras + on-device gaze, projected onto the RGB frame; trials marked from the dashboard or with experiment.begin()/end()"
+  },
+  "streams": {
+    "rgb": { "fps": 10 },
+    "et": {},
+    "eye_gaze": { "rate_hz": 30 },
+    "imu": {}
+  },
+  "processors": [
+    {
+      "id": "gaze_on_rgb",
+      "type": "gaze.project_to_rgb",
+      "inputs": ["rgb", "eye_gaze"],
+      "outputs": ["gaze_rgb"],
+      "execution": { "queue_size": 2, "drop_policy": "latest", "join": "nearest", "tolerance_ms": 40 }
+    }
+  ],
+  "dashboard": { "show": ["rgb", "et_left", "et_right", "eye_gaze", "gaze_rgb"] }
+}

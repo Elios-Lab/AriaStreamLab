@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from ariastreamlab.core.bus import EventBus
 from ariastreamlab.events.markers import DeviceTimeEstimator, Event, EventLog
 from ariastreamlab.monitoring.stats import StatsTracker
@@ -72,3 +74,41 @@ def test_event_log_estimates_device_time(make_sample) -> None:
     delivered = sub.drain()
     assert len(delivered) == 3
     assert all(isinstance(e, Event) for e in delivered)
+
+
+def test_event_log_explicit_time_and_intervals(make_sample) -> None:
+    from ariastreamlab.events.markers import pair_intervals
+
+    bus = EventBus()
+    est = DeviceTimeEstimator()
+    clock = FakeClock(start_ns=10_000_000)
+    log = EventLog(bus, est, clock)
+    est.observe(make_sample(device_ns=1_000_000, host_ns=10_000_000))  # offset 9 ms
+    exact = log.mark("fixation", {"n": 1}, at_ns=1_500_000)
+    assert exact.timestamp_source == "device" and exact.device_timestamp_ns == 1_500_000
+
+    iid = log.begin("trial", {"trial": 1, "condition": "A"})
+    assert iid == "trial-1" and log.open_intervals() == {iid: "trial"}
+    clock.advance_ns(2_000_000)
+    iid2 = log.begin("trial", {"trial": 2})
+    clock.advance_ns(1_000_000)
+    assert log.end("trial", {"correct": True}) == iid2  # the latest open one with that name
+    assert log.end(iid, at_ns=9_000_000) == iid
+    assert log.open_intervals() == {}
+    with pytest.raises(ValueError, match="no open interval"):
+        log.end("trial")
+
+    ivs = log.intervals()
+    assert [i.interval_id for i in ivs] == [iid, iid2]
+    one = {i.interval_id: i for i in ivs}
+    assert one[iid].payload == {"trial": 1, "condition": "A"}
+    assert one[iid].end_ns == 9_000_000 and one[iid].end_source == "device"
+    assert one[iid2].payload == {"trial": 2, "correct": True}
+    assert one[iid2].duration_s == 0.001
+    assert log.intervals("other") == []
+    # an open interval is reported with end_ns None; an end without a start is ignored
+    open_iid = log.begin("block")
+    assert [i.end_ns for i in log.intervals("block")] == [None]
+    events = [e for e in log.all() if e.name != "fixation"]
+    events.append(Event("marker", "ghost", 1, 1, {"phase": "end", "interval": "ghost-9"}))
+    assert {i.interval_id for i in pair_intervals(events)} == {iid, iid2, open_iid}

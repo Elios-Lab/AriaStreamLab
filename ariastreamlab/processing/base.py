@@ -186,6 +186,14 @@ class Processor(ABC):
     def shutdown(self) -> None:  # noqa: B027 - optional hook
         """Called once when the graph stops."""
 
+    def on_parameters_changed(self, old: Any, new: Any) -> None:  # noqa: B027 - optional hook
+        """Called after a live parameter change (``Experiment.set_parameters``).
+
+        ``self.params`` already returns ``new``. Override only if ``setup()`` derived state
+        from the parameters; it runs on the caller's thread, so keep it quick and
+        thread-safe (assigning a float is fine).
+        """
+
     # -- convenience -------------------------------------------------------------------
     @property
     def params(self) -> Any:

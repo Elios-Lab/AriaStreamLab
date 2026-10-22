@@ -20,6 +20,7 @@ import pyarrow.parquet as pq
 
 from ariastreamlab.core.errors import StorageError
 from ariastreamlab.core.sample import DerivedSample, Provenance, Sample
+from ariastreamlab.events.markers import Event, Interval, pair_intervals
 from ariastreamlab.storage.layout import SessionLayout
 from ariastreamlab.storage.manifest import Manifest
 from ariastreamlab.storage.schemas import row_to_payload
@@ -72,6 +73,23 @@ class SessionReader:
     def raw_vrs_files(self) -> list[Path]:
         """VRS files under ``raw/`` (live sessions)."""
         return sorted(self.layout.raw.glob("*.vrs"))
+
+    def events(self, kind: str | None = None, name: str | None = None) -> list[Event]:
+        """The session's events (markers, device state changes…), optionally filtered."""
+        from ariastreamlab.storage.events_store import read_events
+
+        path = self.layout.events_file
+        if not path.exists():
+            return []
+        return [
+            e
+            for e in read_events(path)
+            if (kind is None or e.kind == kind) and (name is None or e.name == name)
+        ]
+
+    def intervals(self, name: str | None = None) -> list[Interval]:
+        """``begin``/``end`` annotation pairs (see :meth:`Experiment.begin`)."""
+        return pair_intervals(self.events(kind="marker"), name)
 
     def provenance(self) -> Provenance:
         """Provenance for samples re-read from this session."""
