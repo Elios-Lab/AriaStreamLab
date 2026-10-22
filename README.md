@@ -8,7 +8,9 @@ it, and the raw VRS recording stays the ground truth while processors produce de
 > bus, synthetic (mock) source, crash-safe session storage, session/VRS replay, the
 > processing graph with plugin processors, the live Aria Gen 2 adapter and the CLI exist;
 > everything but the live path is tested without hardware, the live path against a fake SDK
-> and with a hardware smoke test. The dashboard follows in Phase 5 — see
+> and with a hardware smoke test that passes on a MacBook with the glasses (live session over
+> the hotspot, control hand-over to Wi-Fi, VRS, replay of the session). The dashboard follows
+> in Phase 5 — see
 > [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design, the plan and the hardware
 > findings.
 

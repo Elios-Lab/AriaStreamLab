@@ -95,6 +95,10 @@ glasses by ~7 °C in two minutes, so keep wireless sessions short (≈20 min) or
 
 ## 5. Troubleshooting
 
+On macOS 26 the laptop's SSID is hidden from every command-line tool, so the adapter cannot
+tell that you are already on the hotspot and asks every time (just press ENTER; the hotspot
+is not restarted). Set `device.connection.hotspot.start: false` to skip the question.
+
 | Symptom | Likely cause / fix |
 |---|---|
 | `no Aria Gen 2 glasses found` | cable not in, or not paired: `aria_gen2 device list`, `aria_gen2 auth check` |
