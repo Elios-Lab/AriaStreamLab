@@ -4,10 +4,46 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # never open a browser or a window from a test
+  ARIASTREAMLAB_OPEN_BROWSER: "0"
+  ARIASTREAMLAB_RERUN_SPAWN: "0"
+  PYTHONUNBUFFERED: "1"
 
 jobs:
+  lint:
+    name: ruff · mypy · import contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: pyproject.toml
+      - name: Install
+        run: |
+          uv venv --python 3.11
+          uv pip install -e ".[dev]"
+      - name: Ruff
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+      - name: Mypy
+        run: uv run mypy
+      - name: Import contracts
+        run: uv run lint-imports
+
   test:
+    name: pytest · ${{ matrix.os }} · py${{ matrix.python-version }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -15,18 +51,33 @@ jobs:
         python-version: ["3.10", "3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
-      - name: Set up Python ${{ matrix.python-version }}
-        run: uv python install ${{ matrix.python-version }}
-      - name: Install (no Aria SDK — unit tests must not need it)
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: pyproject.toml
+      - name: Install (no Aria SDK — the unit tests must not need it)
         run: |
           uv venv --python ${{ matrix.python-version }}
           uv pip install -e ".[dev]"
-      - name: Ruff
-        run: uv run ruff check . && uv run ruff format --check .
-      - name: Mypy
-        run: uv run mypy
-      - name: Import contracts
-        run: uv run lint-imports
-      - name: Pytest (hardware tests deselected)
-        run: uv run pytest -m "not hardware"
+      - name: Pytest (hardware tests deselected, SDK and VRS tests skip themselves)
+        run: uv run pytest -m "not hardware" -q
+
+  build:
+    name: sdist and wheel
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Build
+        run: uv build
+      - name: Check that the wheel installs and the CLI answers
+        run: |
+          uv venv --python 3.11
+          uv pip install dist/*.whl
+          uv run ariastreamlab --version
+          uv run ariastreamlab doctor || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/

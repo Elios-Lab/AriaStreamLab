@@ -18,6 +18,7 @@ import math
 from typing import Any
 
 import numpy as np
+from numpy.typing import NDArray
 from pydantic import BaseModel, ConfigDict, Field
 
 from ariastreamlab.core.payloads import GazePayload
@@ -26,14 +27,14 @@ from ariastreamlab.processing.base import Emit, Inputs, OutputSpec, Processor
 __all__ = ["ProjectToRgb", "fisheye624_project", "gaze_point_cpf"]
 
 
-def gaze_point_cpf(yaw_rad: float, pitch_rad: float, depth_m: float) -> np.ndarray:
+def gaze_point_cpf(yaw_rad: float, pitch_rad: float, depth_m: float) -> NDArray[Any]:
     """The 3-D point the gaze ray reaches at ``depth_m`` (CPF; same formula as the SDK)."""
     v = np.array([math.tan(yaw_rad), math.tan(pitch_rad), 1.0], dtype=float)
     v /= np.linalg.norm(v)
     return v * depth_m
 
 
-def fisheye624_project(point_camera: np.ndarray, params: np.ndarray) -> np.ndarray | None:
+def fisheye624_project(point_camera: NDArray[Any], params: NDArray[Any]) -> NDArray[Any] | None:
     """Project a point in the camera frame (metres) to pixels; ``None`` when behind the camera."""
     x, y, z = (float(v) for v in point_camera[:3])
     if z <= 1e-9:

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.1 — 2026-10-28
+
+Continuous integration and the first GitHub release; no change to the application or the
+recorded sessions.
+
+- GitHub Actions: ruff, mypy and the import contracts; the tests on Ubuntu and macOS with
+  Python 3.10–3.12 (hardware tests deselected); a wheel build and install check.
+- A release workflow: pushing a `vX.Y.Z` tag builds the sdist and wheel and publishes the
+  GitHub release with that version's section of this file as its notes.
+- `docs/validation_checklist.md`: what only the glasses can confirm after an update, and
+  what to report.
+- Type annotations that hold with the numpy versions Python 3.10 gets (`NDArray[Any]`);
+  the repository URLs point at Elios-Lab.
+
 ## 0.2.0 — 2026-10-22
 
 The application window. `ariastreamlab` with no arguments opens a desktop window (pywebview:

@@ -11,6 +11,7 @@ import math
 from typing import Any
 
 import numpy as np
+from numpy.typing import NDArray
 
 from ariastreamlab.core.payloads import (
     AudioPayload,
@@ -64,12 +65,12 @@ def _quat_wxyz(rotation: Any) -> tuple[float, float, float, float]:
     return (float(q[0]), float(q[1]), float(q[2]), float(q[3]))
 
 
-def image_to_payload(image_data: Any) -> np.ndarray:
+def image_to_payload(image_data: Any) -> NDArray[Any]:
     """Decoded ``ImageData`` → ``uint8`` array (HxW mono or HxWx3 RGB), no copy when possible."""
     arr = image_data.to_numpy_array()
     if arr.ndim == 3 and arr.shape[2] == 4:  # RGBA from some decoders
         arr = np.ascontiguousarray(arr[:, :, :3])
-    out: np.ndarray = arr if arr.dtype == np.uint8 else arr.astype(np.uint8)
+    out: NDArray[Any] = arr if arr.dtype == np.uint8 else arr.astype(np.uint8)
     return out
 
 
@@ -168,7 +169,7 @@ def vio_hf_timestamp_ns(p: Any) -> int:
 def hand_to_payload(h: Any) -> HandPayload:
     """``HandTrackingResult`` → :class:`HandPayload` (21×3 landmarks per hand, device frame)."""
 
-    def lm(hand: Any) -> np.ndarray | None:
+    def lm(hand: Any) -> NDArray[Any] | None:
         if hand is None:
             return None
         return np.asarray(hand.landmark_positions_device, dtype=np.float32).reshape(-1, 3)
@@ -192,7 +193,9 @@ def audio_to_payload(
     ts = np.asarray(record.capture_timestamps_ns, dtype=np.int64)
     n = len(ts) if len(ts) else 0
     ch = int(num_channels) if num_channels else (int(raw.size // n) if n else 1)
-    samples = raw.reshape(n, ch) if n and raw.size == n * ch else raw.reshape(-1, max(ch, 1))
+    samples: NDArray[Any] = (
+        raw.reshape(n, ch) if n and raw.size == n * ch else raw.reshape(-1, max(ch, 1))
+    )
     if samples.dtype != np.int16:
         samples = np.clip(samples, -32768, 32767).astype(np.int16)
     return AudioPayload(samples, int(sample_rate_hz), ts if n else None)

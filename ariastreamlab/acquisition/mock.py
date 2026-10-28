@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
+from numpy.typing import NDArray
 
 from ariastreamlab.acquisition.base import Source, SourceCapabilities, SourceStats
 from ariastreamlab.config.models import MockConfig
@@ -302,7 +303,7 @@ class MockSource(Source):
             data = {"stream": sid, "t": t}
         return Sample(MOCK_DEVICE_ID, sid, device_ns, host_ns, seq, data, self._provenance, meta)
 
-    def _image(self, sid: str, t: float, seq: int) -> np.ndarray:
+    def _image(self, sid: str, t: float, seq: int) -> NDArray[Any]:
         h, w = self._shapes[sid]
         yy, xx = np.mgrid[0:h, 0:w]
         # moving gradient + a bouncing bright disc; cheap, deterministic, looks alive on a dashboard

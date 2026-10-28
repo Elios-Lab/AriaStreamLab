@@ -1,5 +1,7 @@
 # AriaStreamLab
 
+[![CI](https://github.com/Elios-Lab/AriaStreamLab/actions/workflows/ci.yml/badge.svg)](https://github.com/Elios-Lab/AriaStreamLab/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/Elios-Lab/AriaStreamLab?include_prereleases)](https://github.com/Elios-Lab/AriaStreamLab/releases) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A framework for running experiments with [Meta Project Aria Gen 2 glasses](https://www.projectaria.com/). Define an experiment in a single JSON file and run it with one command. The raw [VRS](https://facebookresearch.github.io/vrs/) recording (a format for recording and replaying sensor data streams) is preserved as ground truth, while processors derive data from the live streams. Every session includes its provenance and can be replayed through the same processing pipeline without the glasses.
 
 Built for researchers who need **trustworthy recordings** and **reproducible analyses**, the framework prioritises temporal correctness, provenance and observability over convenience. Where hardware behaviour diverges from the documentation, those differences are measured and documented.
@@ -306,6 +308,7 @@ and the precision of each kind of event.
 | [docs/tutorials/custom_processors.md](docs/tutorials/custom_processors.md) | writing, parameterising, joining and packaging processors |
 | [docs/tutorials/dashboard.md](docs/tutorials/dashboard.md) | the dashboard cards, the designer, `/api/state` |
 | [docs/tutorials/timestamps.md](docs/tutorials/timestamps.md) | clocks, synchronisation, event precision, replay |
+| [docs/validation_checklist.md](docs/validation_checklist.md) | what to verify with the glasses after an update, and what to report |
 
 ## Layout
 
@@ -333,6 +336,14 @@ ARIA_HARDWARE=1 pytest -m hardware -s   # on the paired laptop: 15 s live sessio
 # tests/integration/test_vrs_replay.py runs only with projectaria_tools and a recording at
 # tests/data/aria_gen2_sample.vrs (see tests/data/README.md)
 ```
+
+The same checks run on GitHub Actions for every push and pull request (ruff, mypy, the
+import contracts, the tests on Ubuntu and macOS with Python 3.10–3.12, and a wheel build).
+A release is a tag: bump `version` in `pyproject.toml`, add the section to `CHANGELOG.md`,
+then `git tag -a v0.2.2 -m "AriaStreamLab 0.2.2" && git push origin v0.2.2` — the release
+workflow builds the sdist and wheel and publishes the GitHub release with that changelog
+section as its notes. Behaviour that only the glasses can confirm is listed in
+[docs/validation_checklist.md](docs/validation_checklist.md).
 
 ## Licence
 

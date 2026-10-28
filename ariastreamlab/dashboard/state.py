@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
+from numpy.typing import NDArray
 
 from ariastreamlab.core.bus import DropPolicy, EventBus, Subscription
 from ariastreamlab.core.payloads import (
@@ -119,7 +120,7 @@ def channels_of(data: Any) -> dict[str, tuple[float, str]]:
     return {}
 
 
-def encode_jpeg(img: np.ndarray, max_width: int = 640, quality: int = 80) -> tuple[str, int, int]:
+def encode_jpeg(img: NDArray[Any], max_width: int = 640, quality: int = 80) -> tuple[str, int, int]:
     """Encode an RGB/mono uint8 array as a JPEG data URL.
 
     Returns ``(data_url, width, height)`` where width/height are those of the *encoded*

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ariastreamlab"
-version = "0.2.0"
+version = "0.2.1"
 description = "Experiment-oriented framework for Meta Project Aria Gen 2 glasses: acquisition, realtime processing, storage, replay and monitoring."
 readme = "README.md"
 license = "MIT"
@@ -61,8 +61,8 @@ ariastreamlab = "ariastreamlab.cli.main:app"
 # Third-party packages register processors here: "<type>" = "<module>:<Class>"
 
 [project.urls]
-Documentation = "https://github.com/riccardoberta/AriaStreamLab#readme"
-Source = "https://github.com/riccardoberta/AriaStreamLab"
+Documentation = "https://github.com/Elios-Lab/AriaStreamLab#readme"
+Source = "https://github.com/Elios-Lab/AriaStreamLab"
 
 [tool.hatch.build.targets.wheel]
 packages = ["ariastreamlab"]

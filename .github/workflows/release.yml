@@ -1,0 +1,64 @@
+name: Release
+
+# Pushing a tag `vX.Y.Z` builds the sdist and wheel and publishes a GitHub release whose
+# notes are that version's section of CHANGELOG.md:
+#
+#   git tag -a v0.2.0 -m "AriaStreamLab 0.2.0" && git push origin v0.2.0
+#
+# The tag must match `version` in pyproject.toml; the job refuses otherwise.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "An existing tag to (re)publish, e.g. v0.2.0"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Resolve the tag and check it against pyproject.toml
+        id: meta
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          VERSION="${TAG#v}"
+          PYPROJECT=$(python3 scripts/release_notes.py --version)
+          if [ "$VERSION" != "$PYPROJECT" ]; then
+            echo "tag $TAG does not match pyproject version $PYPROJECT" >&2; exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Release notes from CHANGELOG.md
+        run: |
+          python3 scripts/release_notes.py "${{ steps.meta.outputs.version }}" > notes.md
+          cat notes.md
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.meta.outputs.tag }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "AriaStreamLab ${{ steps.meta.outputs.version }}" --notes-file notes.md
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" --title "AriaStreamLab ${{ steps.meta.outputs.version }}" \
+              --notes-file notes.md dist/*
+          fi

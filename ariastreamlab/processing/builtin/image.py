@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 import cv2
 import numpy as np
+from numpy.typing import NDArray
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ariastreamlab.processing.base import Emit, Inputs, OutputSpec, Processor
@@ -18,7 +19,7 @@ _INTERP = {
 }
 
 
-def _image(inputs: Inputs) -> np.ndarray:
+def _image(inputs: Inputs) -> NDArray[Any]:
     img = inputs.primary.data
     if not isinstance(img, np.ndarray) or img.ndim not in (2, 3):
         raise TypeError(f"expected an HxW or HxWxC image, got {type(img).__name__}")

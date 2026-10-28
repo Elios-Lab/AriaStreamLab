@@ -27,6 +27,7 @@ from typing import Any
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
+from numpy.typing import NDArray
 
 from ariastreamlab.core.errors import StorageError
 from ariastreamlab.core.sample import AnySample, Sample
@@ -255,7 +256,7 @@ class VideoWriter(StreamWriter):
         self._size: tuple[int, int] | None = None
         self._is_color = True
 
-    def _open_segment(self, img: np.ndarray) -> None:
+    def _open_segment(self, img: NDArray[Any]) -> None:
         import cv2
 
         self._size = (int(img.shape[1]), int(img.shape[0]))
