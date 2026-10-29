@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- A session started from the application window tried to start a second dashboard server
+  (NiceGUI: "Unable to register another startup handler") — `Dashboard.start()` now
+  recognises the server running on the main thread and reuses it (seen in hardware
+  validation step 4).
+
 ## 0.2.2 — 2026-10-29
 
 - `scripts/release.py`: every change is a patch version — bumps `pyproject.toml`, dates the

@@ -338,7 +338,7 @@ def test_delete_session_removes_only_session_directories(tmp_path: Path) -> None
     not_a_session = tmp_path / "plain"
     not_a_session.mkdir()
     (not_a_session / "x.txt").write_text("x")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="not a session directory"):
         delete_session(not_a_session)
     assert not_a_session.exists()
 
@@ -347,8 +347,22 @@ def test_delete_session_removes_only_session_directories(tmp_path: Path) -> None
     (session / "manifest.json").write_text("{}")
     (session / "raw").mkdir()
     (session / "raw" / "big.vrs").write_bytes(b"0" * 1000)
-    with pytest.raises(ValueError):  # the one currently recording
+    with pytest.raises(ValueError, match="still recording"):  # the one currently recording
         delete_session(session, active=session)
     assert session.exists()
     freed = delete_session(session, active=tmp_path / "other")
     assert freed >= 1000 and not session.exists()
+
+
+def test_start_does_not_spawn_a_second_server_while_serve_runs() -> None:
+    """A session launched from the application window (serve() on the main thread) must
+    reuse that server: NiceGUI refuses a second startup handler in the same process."""
+    from ariastreamlab.config.models import DashboardConfig
+    from ariastreamlab.dashboard.app import Dashboard
+
+    dash = Dashboard(DashboardConfig(enabled=True, port=8799, open_browser=False))
+    dash._serving = True  # what serve() sets while ui.run() blocks the main thread
+    dash._ready.set()
+    assert dash.running
+    assert dash.start(timeout=0.1) is True
+    assert dash._thread is None  # nothing was started

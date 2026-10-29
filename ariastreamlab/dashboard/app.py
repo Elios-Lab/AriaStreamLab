@@ -75,6 +75,7 @@ class Dashboard:
         self.replay_range_s: tuple[float, float] | None = None
         self.replay_t0_ns: int | None = None
         self._thread: threading.Thread | None = None
+        self._serving = False
         self._ready = threading.Event()
         self._failed = threading.Event()  # set by the server thread when ui.run() raised
         self._lock = threading.Lock()
@@ -101,14 +102,17 @@ class Dashboard:
         return f"http://{self.config.host}:{self.config.port}/"
 
     @property
-    def running(self) -> bool:  # noqa: D102
-        return self._thread is not None and self._thread.is_alive()
+    def running(self) -> bool:
+        """True while the server runs (background thread, or the main thread in the app)."""
+        return self._serving or (self._thread is not None and self._thread.is_alive())
 
     def start(self, timeout: float = 15.0, *, native: bool = False) -> bool:
         """Start the server thread once; returns True when it answers within ``timeout``.
 
         ``native`` opens a desktop window instead of relying on a browser (best effort from a
         background thread; the ``ariastreamlab`` app runs the window on the main thread).
+        When the server is already up — the application window, or an earlier session in
+        this process — nothing is started and the existing server is used.
         """
         if self.running:
             return self._ready.wait(timeout) and not self._failed.is_set()
@@ -213,6 +217,10 @@ class Dashboard:
         """
         from nicegui import app, ui
 
+        if self._serving:
+            raise RuntimeError("the dashboard server is already running in this process")
+        self._serving = True
+
         @app.on_startup
         def _started() -> None:
             self._ready.set()
@@ -247,6 +255,8 @@ class Dashboard:
             log.exception("dashboard.server_failed")
             self._failed.set()
             self._ready.set()
+        finally:
+            self._serving = False
 
     def _build_pages(self) -> None:
         if self._pages_built:
