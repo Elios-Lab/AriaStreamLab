@@ -122,11 +122,19 @@ def environment() -> dict[str, Any]:
     """Facts about the interpreter and the machine the application runs in."""
     py = sys.version_info[:2]
     ok = SDK_PYTHON[0] <= py <= SDK_PYTHON[1]
+    conda = os.environ.get("CONDA_PREFIX")
     venv = sys.prefix != getattr(sys, "base_prefix", sys.prefix)
+    if conda and Path(conda).resolve() == Path(sys.prefix).resolve():
+        kind = f"conda environment {os.environ.get('CONDA_DEFAULT_ENV') or Path(conda).name}"
+    elif venv:
+        kind = "virtual environment"
+    else:
+        kind = "system interpreter"
     return {
         "python": platform.python_version(),
         "executable": sys.executable,
-        "virtualenv": venv,
+        "virtualenv": venv or bool(conda),
+        "environment": kind,
         "prefix": sys.prefix,
         "sdk_compatible": ok,
         "sdk_python_note": ""
@@ -149,8 +157,19 @@ def environment() -> dict[str, Any]:
 
 
 def pip_install_argv(specs: Sequence[str], *, upgrade: bool = False) -> list[str]:
-    """``python -m pip install …`` for this interpreter (uv when it is the installer here)."""
-    argv = [sys.executable, "-m", "pip", "install"]
+    """The install command for this interpreter.
+
+    ``python -m pip install …`` — or ``uv pip install`` when the environment has no pip
+    module (environments made by ``uv venv``) and uv is on PATH.
+    """
+    import importlib.util
+
+    if importlib.util.find_spec("pip") is not None:
+        argv = [sys.executable, "-m", "pip", "install"]
+    elif (uv := shutil.which("uv")) is not None:
+        argv = [uv, "pip", "install", "--python", sys.executable]
+    else:
+        argv = [sys.executable, "-m", "pip", "install"]  # fails with a clear message
     if upgrade:
         argv.append("--upgrade")
     return [*argv, *specs]

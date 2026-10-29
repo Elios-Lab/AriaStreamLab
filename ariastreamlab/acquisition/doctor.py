@@ -54,6 +54,33 @@ def _port_free(port: int) -> bool:
             return False
 
 
+def summarize_device_list(text: str) -> str:
+    """One line from ``aria_gen2 device list``: what is reachable now, what was paired."""
+    now: list[str] = []
+    paired: list[str] = []
+    section: list[str] | None = None
+    for raw in text.splitlines():
+        line = raw.split("]:", 1)[-1].strip() if "]:" in raw else raw.strip()
+        low = line.lower()
+        if low.startswith("available now"):
+            section = now
+            continue
+        if low.startswith("previously paired"):
+            section = paired
+            continue
+        if low.startswith("pass ") or not line:
+            section = None
+            continue
+        if section is not None and line != "(none)":
+            section.append(line.split()[0])
+    if not now and not paired:
+        return "no device reachable or paired"
+    return (
+        f"reachable now: {', '.join(now) if now else 'none'} · previously paired: "
+        f"{', '.join(paired) if paired else 'none'}"
+    )
+
+
 def run_checks(
     *, storage_root: Path | None = None, server_port: int = 6768, with_device: bool = False
 ) -> list[Check]:
@@ -143,7 +170,7 @@ def run_checks(
                 Check(
                     "aria_gen2 device list",
                     "ok" if res.ok else "warn",
-                    (res.stdout.strip().splitlines() or ["(no output)"])[-1][:120],
+                    summarize_device_list(res.text) if res.ok else res.text.strip()[-120:],
                 )
             )
             res = AriaCli().run("auth check", timeout_s=60)

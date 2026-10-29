@@ -34,7 +34,7 @@ def build_setup_page(dash: Any, ui: Any) -> None:
                 note = env["sdk_python_note"]
                 ui.markdown(
                     f"Python **{env['python']}** — `{env['executable']}`  \n"
-                    f"{'virtual environment' if env['virtualenv'] else 'system interpreter'}: "
+                    f"{env['environment']}: "
                     f"`{env['prefix']}`  \n"
                     f"AriaStreamLab **{env['ariastreamlab']}** · working directory "
                     f"`{env['cwd']}`  \n"
@@ -119,10 +119,18 @@ def build_setup_page(dash: Any, ui: Any) -> None:
                 with ui.row().classes("items-center gap-3 w-full"):
                     ui.label("Output").classes("font-bold")
                     run_status = ui.label("").classes("text-xs opacity-70 grow")
+                    ui.button("copy", icon="content_copy", on_click=lambda: copy_output()).props(
+                        "flat dense"
+                    ).tooltip("copy the whole output to the clipboard")
+                    ui.button("save", icon="save", on_click=lambda: save_output()).props(
+                        "flat dense"
+                    ).tooltip("save the output as a text file")
                     ui.button("cancel", icon="cancel", on_click=lambda: cancel_run()).props(
                         "flat dense color=red"
                     )
-                log = ui.log(max_lines=400).classes("w-full h-[380px] text-xs")
+                log = ui.log(max_lines=400).classes(
+                    "w-full h-[380px] text-xs font-mono whitespace-pre-wrap break-all select-text"
+                )
 
     # ---- confirmation dialog -----------------------------------------------------------------
     with ui.dialog() as confirm_dialog, ui.card():
@@ -177,10 +185,12 @@ def build_setup_page(dash: Any, ui: Any) -> None:
         checks_col.clear()
         with checks_col:
             for c in result:
-                with ui.row().classes("items-start gap-2 w-full"):
-                    ui.label(c.status.upper()).classes(f"w-[48px] {_COLOURS.get(c.status, '')}")
-                    ui.label(c.name).classes("w-[220px]")
-                    ui.label(c.detail).classes("grow opacity-80 break-all")
+                with ui.row().classes("items-start gap-2 w-full flex-nowrap"):
+                    ui.label(c.status.upper()).classes(
+                        f"w-[48px] shrink-0 {_COLOURS.get(c.status, '')}"
+                    )
+                    ui.label(c.name).classes("w-[220px] shrink-0")
+                    ui.label(c.detail).classes("grow min-w-0 opacity-80 break-words select-text")
         n_fail = sum(1 for c in result if c.status == "fail")
         n_warn = sum(1 for c in result if c.status == "warn")
         checks_status.text = (
@@ -212,8 +222,39 @@ def build_setup_page(dash: Any, ui: Any) -> None:
         run = model.CommandRun(argv).start(timeout_s=action.timeout_s)
         dash.setup_run = run
         shown_run[0] = run
-        log.push(f"$ {' '.join(argv)}")
+        log.push(f"$ {' '.join(argv)}", classes="whitespace-pre-wrap break-all opacity-70")
         run_status.text = f"running: {action.label}"
+
+    def _output_text() -> str:
+        run = getattr(dash, "setup_run", None)
+        if run is None:
+            return ""
+        return f"$ {' '.join(run.argv)}\n{run.text(last=10_000)}\n"
+
+    def copy_output() -> None:
+        text = _output_text()
+        if not text:
+            ui.notify("nothing to copy", type="warning")
+            return
+        ui.clipboard.write(text)
+        ui.notify("copied")
+
+    def save_output() -> None:
+        text = _output_text()
+        if not text:
+            ui.notify("nothing to save", type="warning")
+            return
+        import datetime as _dt
+        from pathlib import Path as _Path
+
+        name = f"setup-output-{_dt.datetime.now():%Y%m%d-%H%M%S}.txt"
+        try:
+            path = _Path.cwd() / name
+            path.write_text(text, encoding="utf-8")
+        except OSError as exc:
+            ui.notify(f"cannot save: {exc}", type="negative")
+            return
+        ui.notify(f"saved {path}")
 
     def cancel_run() -> None:
         run = getattr(dash, "setup_run", None)
@@ -230,11 +271,11 @@ def build_setup_page(dash: Any, ui: Any) -> None:
             log.clear()
             shown_lines[0] = 0
             shown_run[0] = run
-            log.push(f"$ {' '.join(run.argv)}")
+            log.push(f"$ {' '.join(run.argv)}", classes="whitespace-pre-wrap break-all opacity-70")
         lines = run.lines
         if len(lines) > shown_lines[0]:
             for line in lines[shown_lines[0] :]:
-                log.push(line)
+                log.push(line, classes="whitespace-pre-wrap break-all")
             shown_lines[0] = len(lines)
         if run.running:
             return

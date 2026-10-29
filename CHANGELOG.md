@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Setup page, from the first hardware validation of 0.2: text can be selected and copied in
+  the native window; the Output card wraps long lines and has *copy* and *save* buttons; the
+  checks keep their detail beside the name; a conda environment is named as such; the
+  `device list` check says what is reachable and what is paired instead of echoing the CLI's
+  last line; the install buttons use `uv pip` in an environment that has no pip module.
 - `docs/manual.md`: setting up a data-collection project, from the research question to
   analysed sessions, with three worked projects in `examples/projects/` (gaze on fixation
   targets, visual search on a desk, walking laps), each with its experiment file, protocol

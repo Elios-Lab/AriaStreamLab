@@ -218,6 +218,9 @@ class Dashboard:
             )
             native, show = False, True
         self._build_pages()
+        if native:  # a researcher copies output and paths out of the window
+            app.native.window_args["text_select"] = True
+            app.native.window_args["zoomable"] = True
         # under pytest NiceGUI replaces the port with this variable (for its screen tests)
         os.environ.setdefault("NICEGUI_SCREEN_TEST_PORT", str(self.config.port))
         try:

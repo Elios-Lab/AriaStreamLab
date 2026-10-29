@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import sys
 import time
 
@@ -24,7 +25,11 @@ def test_environment_and_packages() -> None:
     assert pk["projectaria_client_sdk"].required is False
     assert "projectaria-tools" in pk["projectaria_tools"].pip
     argv = model.pip_install_argv(["projectaria-tools~=2.3"], upgrade=True)
-    assert argv[:4] == [sys.executable, "-m", "pip", "install"] and "--upgrade" in argv
+    assert "--upgrade" in argv and argv[-1] == "projectaria-tools~=2.3"
+    if importlib.util.find_spec("pip") is not None:
+        assert argv[:4] == [sys.executable, "-m", "pip", "install"]
+    else:  # an environment made by `uv venv` has no pip: uv installs into it
+        assert argv[1:5] == ["pip", "install", "--python", sys.executable]
 
 
 def test_actions_build_their_commands(monkeypatch) -> None:
