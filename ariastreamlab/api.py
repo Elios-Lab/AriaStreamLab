@@ -119,6 +119,7 @@ class Experiment:
         self._stop = threading.Event()
         self._opened = False
         self._failed: BaseException | None = None
+        self._run_thread: threading.Thread | None = None
         self._log = get_logger("ariastreamlab.experiment")
         configure_logging(config.logging.level, json_lines=config.logging.format == "json")
 
@@ -132,11 +133,16 @@ class Experiment:
         duration_s: float | None = None,
         persist: bool = True,
         dashboard: bool | None = None,
+        participant: str | None = None,
     ) -> Experiment:
-        """Load ``path`` and build the experiment."""
+        """Load ``path`` and build the experiment (``participant`` overrides the file's)."""
         p = Path(path)
+        cfg = load_config(p)
+        if participant is not None:
+            experiment = cfg.experiment.model_copy(update={"participant": participant})
+            cfg = cfg.model_copy(update={"experiment": experiment})
         return cls(
-            load_config(p),
+            cfg,
             mock=mock,
             duration_s=duration_s,
             persist=persist,
@@ -441,11 +447,53 @@ class Experiment:
         """Ask :meth:`run` to return (thread-safe)."""
         self._stop.set()
 
+    def start(self, duration_s: float | None = None) -> threading.Thread:
+        """Run the session on a background thread and return at once.
+
+        The calling thread is then free to drive the protocol — ask the participant, show a
+        stimulus, ``begin()``/``end()`` trials — while acquisition continues; :meth:`stop`
+        ends the session early, :meth:`wait` blocks until it ends (the duration elapsed, the
+        source finished or :meth:`stop` was called) and :meth:`close` finalises it. Ctrl-C
+        handling stays with the calling thread (``KeyboardInterrupt`` in the protocol loop
+        — the ``with`` block then closes the session cleanly).
+        """
+        if self._run_thread is not None and self._run_thread.is_alive():
+            raise RuntimeError("the session is already running")
+        if not self._opened:
+            self.open()
+        thread = threading.Thread(
+            target=self.run,
+            kwargs={"duration_s": duration_s, "install_signal_handler": False},
+            name="experiment-run",
+            daemon=True,
+        )
+        self._run_thread = thread
+        thread.start()
+        return thread
+
+    def wait(self, timeout: float | None = None) -> bool:
+        """Block until a session started with :meth:`start` ends; ``True`` when it has."""
+        thread = self._run_thread
+        if thread is None:
+            return True
+        thread.join(timeout)
+        return not thread.is_alive()
+
+    @property
+    def running(self) -> bool:
+        """``True`` while a session started with :meth:`start` is acquiring."""
+        thread = self._run_thread
+        return thread is not None and thread.is_alive()
+
     def close(self) -> Path | None:
         """Stop everything, finalise the session directory, release the bus. Idempotent."""
         if not self._opened:
             return None
         self._stop.set()
+        thread = self._run_thread
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=30)  # run() stops the source and drains the graph itself
+        self._run_thread = None
         if self.source is not None:
             self.source.stop()
         if self.graph is not None:
@@ -790,6 +838,8 @@ class Experiment:
             plan = getattr(self.source, "plan", None)
             if plan is not None:
                 expected = dict(getattr(plan, "expected_rates_hz", {}) or {})
+            if not expected:  # the mock: the configured fps / rate_hz
+                expected = dict(getattr(self.source, "expected_rates_hz", {}) or {})
             first = getattr(self.source, "first_sample_host_ns", None)
             if first is not None and self._stopped_at_ns is not None:
                 streaming_s = round((self._stopped_at_ns - first) / 1e9, 1)

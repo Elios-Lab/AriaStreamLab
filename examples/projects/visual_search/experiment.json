@@ -1,0 +1,36 @@
+{
+  "extends": "preset:gaze_experiment",
+  "experiment": {
+    "name": "visual_search",
+    "participant": "P000",
+    "description": "Visual search on a desk: the participant finds a named object among distractors in a sparse or a cluttered layout; each trial is a `search` interval (target, layout) ended with found/not found; analyze.py measures search time, gaze path and head movements."
+  },
+  "streams": {
+    "rgb": { "fps": 10, "resolution": "2016x1512" },
+    "et": {},
+    "eye_gaze": { "rate_hz": 30 },
+    "imu": {}
+  },
+  "processors": [
+    {
+      "id": "gaze_on_rgb",
+      "type": "gaze.project_to_rgb",
+      "inputs": ["eye_gaze"],
+      "outputs": ["gaze_rgb"],
+      "parameters": { "default_depth_m": 0.7 },
+      "save_output": true
+    },
+    {
+      "id": "head_motion",
+      "type": "imu.motion_detector",
+      "inputs": ["imu_left"],
+      "outputs": ["head_motion"],
+      "parameters": { "threshold": 0.3, "window_ms": 150, "emit": "always" },
+      "execution": { "queue_size": 256, "drop_policy": "drop_oldest" },
+      "save_output": true
+    }
+  ],
+  "storage": { "root": "./sessions" },
+  "dashboard": { "show": ["rgb", "eye_gaze", "gaze_rgb", "head_motion"] },
+  "mock": { "seed": 2 }
+}

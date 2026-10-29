@@ -27,3 +27,5 @@ probe_report*.json
 
 # tool caches
 .import_linter_cache/
+# project templates: recordings and analysis outputs are never committed
+examples/projects/*/results/

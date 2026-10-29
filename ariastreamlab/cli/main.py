@@ -378,6 +378,10 @@ def run(
     dashboard_port: Annotated[
         int | None, typer.Option("--dashboard-port", help="Override dashboard.port")
     ] = None,
+    participant: Annotated[
+        str | None,
+        typer.Option("--participant", "-p", help="Override experiment.participant for this run"),
+    ] = None,
 ) -> None:
     """Run an experiment."""
     try:
@@ -387,6 +391,7 @@ def run(
             duration_s=duration,
             persist=not no_storage,
             dashboard=False if no_dashboard else None,
+            participant=participant,
         )
         _apply_dashboard_port(exp, dashboard_port)
     except AriaStreamLabError as exc:

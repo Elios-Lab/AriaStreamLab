@@ -289,7 +289,9 @@ def build_summary(
         outages = [list(o) for o in (g("outages") or ())]
         outage_s = float(g("outage_s") or 0.0)
         last_host = g("last_host_ns")
-        if end_host_ns is not None and last_host is not None and span is not None:
+        periodic = bool(g("nominal_rate_hz")) or (span is not None and span > 0)
+        # a one-shot stream (device_calibration: one sample at start) has no coverage to lose
+        if end_host_ns is not None and last_host is not None and span is not None and periodic:
             tail = (end_host_ns - last_host) / 1e9
             if tail > max(1.0, 10 / float(g("nominal_rate_hz") or 1.0)):
                 outages.append([round(span, 3), round(tail, 3)])
@@ -313,7 +315,11 @@ def build_summary(
             span_s=None if span is None else round(span, 1),
             outage_s=round(outage_s, 1),
             outages=outages,
-            coverage=None if not span else round(max(0.0, 1 - outage_s / span), 3),
+            # coverage is meaningful for periodic streams only: a derived stream that emits
+            # on changes (``emit: "changes"``) is silent by design between events
+            coverage=None
+            if not span or (sid not in raw_ids and not expected.get(sid, g("nominal_rate_hz")))
+            else round(max(0.0, 1 - outage_s / span), 3),
             device_sent=None if dev is None else dev[3],
         )
         summary.streams.append(row)

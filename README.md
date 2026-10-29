@@ -147,6 +147,7 @@ failure modes met on real hardware are in
 | `examples/rgb_processing.json` | RGB + a realtime pipeline: downscale → grayscale, IMU low-pass, head-motion gate |
 | `examples/mock_experiment.json` | the synthetic source with two processors — runs anywhere |
 | `examples/custom_processor/` | a processor written for one experiment, loaded from `processors/` next to the JSON |
+| `examples/projects/gaze/`, `visual_search/`, `walking/` | three complete studies — experiment file, protocol script with annotations, session-day checklist, analysis script — to copy as the start of your own; [docs/manual.md](docs/manual.md) walks through them |
 
 ## Describing an experiment
 
@@ -190,14 +191,21 @@ Markers and intervals live on the same time axis as the sensor data:
 ```python
 from ariastreamlab.api import Experiment
 
-with Experiment.from_json("pilot.json") as exp:
-    trial = exp.begin("trial", {"trial": 3, "condition": "A"})  # an interval
-    exp.mark("stimulus", {"id": "img_17"})  # a point event, stamped now
-    exp.mark("blink", at_ns=sample.device_timestamp_ns)  # an exact device time
-    exp.end(trial, {"correct": True})
+with Experiment.from_json("pilot.json", participant="P003") as exp:
+    exp.start()  # acquisition runs in the background; the protocol drives the annotations
+    for trial in range(1, 11):
+        input(f"trial {trial}: ENTER to start ")
+        tid = exp.begin("trial", {"trial": trial, "condition": "A"})  # an interval
+        exp.mark("stimulus", {"id": "img_17"})  # a point event, stamped now
+        exp.mark("blink", at_ns=sample.device_timestamp_ns)  # an exact device time
+        exp.end(tid, {"correct": True})
     exp.set_parameters("motion", threshold=0.3)  # recorded as a config_change event
-    exp.run()
+    exp.stop()
+    exp.wait()
 ```
+
+(`exp.run()` instead of `start()`/`wait()` blocks until the duration or Ctrl-C, which is what
+`ariastreamlab run` does; `examples/projects/` has three complete protocol scripts.)
 
 Each event records `timestamp_source`: `device` (exact, you supplied the timestamp),
 `estimated` (created on the laptop and mapped through the current host↔device offset
@@ -303,6 +311,7 @@ and the precision of each kind of event.
 
 | Document | Content |
 |---|---|
+| [docs/manual.md](docs/manual.md) | **start here**: setting up a data-collection project, from the research question to analysed sessions, with three worked projects |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | the design: interfaces, configuration model, storage format, concurrency, timestamp strategy, the hardware findings (§0), implementation status (§14) |
 | [docs/tutorials/live_session.md](docs/tutorials/live_session.md) | a live session step by step, health signals, troubleshooting |
 | [docs/tutorials/custom_processors.md](docs/tutorials/custom_processors.md) | writing, parameterising, joining and packaging processors |

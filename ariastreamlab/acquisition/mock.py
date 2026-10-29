@@ -121,6 +121,11 @@ class MockSource(Source):
         self._periods = {
             sid: rate_to_period_ns(_rate(p, REGISTRY.get(sid))) for sid, p in self._streams.items()
         }
+        self.expected_rates_hz: dict[str, float] = {
+            sid: _rate(p, REGISTRY.get(sid)) for sid, p in self._streams.items()
+        }
+        """The configured rate per stream (``fps`` / ``rate_hz``, else nominal): what the
+        quality summary judges the received rate against, as the live plan does."""
         self._shapes = {
             sid: _resolution(p, REGISTRY.get(sid), self._cfg.image_scale)
             for sid, p in self._streams.items()

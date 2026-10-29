@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- `docs/manual.md`: setting up a data-collection project, from the research question to
+  analysed sessions, with three worked projects in `examples/projects/` (gaze on fixation
+  targets, visual search on a desk, walking laps), each with its experiment file, protocol
+  script, session-day checklist and analysis script, all runnable on synthetic data.
+- `Experiment.start()` / `wait()` / `running`: acquisition on a background thread so that a
+  protocol script drives the annotations from the main thread; `from_json(participant=…)`
+  and `ariastreamlab run --participant` override the file's participant id.
+- Quality summary: the mock's configured `fps` / `rate_hz` are the expected rates (no false
+  "below 80 %" warning for `fps: 5`); no coverage for one-shot streams (`device_calibration`)
+  or for derived streams that emit on changes.
+
 ## 0.2.1 — 2026-10-28
 
 Continuous integration and the first GitHub release; no change to the application or the

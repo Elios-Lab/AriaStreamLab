@@ -1,0 +1,31 @@
+{
+  "extends": "preset:base",
+  "experiment": {
+    "name": "walking_laps",
+    "participant": "P000",
+    "description": "Walking a fixed indoor loop at two paces: each lap is a `lap` interval (lap number, pace); analyze.py reconstructs the trajectory from VIO, measures distance, speed and step cadence from the IMU, and altitude change from the barometer."
+  },
+  "streams": {
+    "rgb": { "fps": 5, "resolution": "2016x1512" },
+    "vio": {},
+    "imu": {},
+    "barometer": {}
+  },
+  "processors": [
+    {
+      "id": "head_motion",
+      "type": "imu.motion_detector",
+      "inputs": ["imu_left"],
+      "outputs": ["head_motion"],
+      "parameters": { "threshold": 0.5, "window_ms": 200, "emit": "changes" },
+      "execution": { "queue_size": 256, "drop_policy": "drop_oldest" },
+      "save_output": true
+    }
+  ],
+  "device": {
+    "connection": { "streaming_interface": "wifi_sap", "stall_timeout_s": 30, "on_stall": "stop" }
+  },
+  "storage": { "root": "./sessions" },
+  "dashboard": { "show": ["rgb", "vio", "imu_left", "barometer"] },
+  "mock": { "seed": 3 }
+}

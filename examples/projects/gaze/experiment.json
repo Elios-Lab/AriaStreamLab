@@ -1,0 +1,27 @@
+{
+  "extends": "preset:gaze_experiment",
+  "experiment": {
+    "name": "gaze_targets",
+    "participant": "P000",
+    "description": "Gaze accuracy and stability on five fixation targets at about one metre: each fixation is a `fixation` interval with its target name; analyze.py measures where the on-device gaze landed on the RGB frame and how much it scattered."
+  },
+  "streams": {
+    "rgb": { "fps": 10, "resolution": "2016x1512" },
+    "et": {},
+    "eye_gaze": { "rate_hz": 30 },
+    "imu": {}
+  },
+  "processors": [
+    {
+      "id": "gaze_on_rgb",
+      "type": "gaze.project_to_rgb",
+      "inputs": ["eye_gaze"],
+      "outputs": ["gaze_rgb"],
+      "parameters": { "default_depth_m": 1.0 },
+      "save_output": true
+    }
+  ],
+  "storage": { "root": "./sessions" },
+  "dashboard": { "show": ["rgb", "et_left", "et_right", "eye_gaze", "gaze_rgb"] },
+  "mock": { "seed": 1 }
+}
