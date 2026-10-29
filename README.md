@@ -348,10 +348,13 @@ ARIA_HARDWARE=1 pytest -m hardware -s   # on the paired laptop: 15 s live sessio
 
 The same checks run on GitHub Actions for every push and pull request (ruff, mypy, the
 import contracts, the tests on Ubuntu and macOS with Python 3.10–3.12, and a wheel build).
-A release is a tag: bump `version` in `pyproject.toml`, add the section to `CHANGELOG.md`,
-then `git tag -a v0.2.2 -m "AriaStreamLab 0.2.2" && git push origin v0.2.2` — the release
-workflow builds the sdist and wheel and publishes the GitHub release with that changelog
-section as its notes. Behaviour that only the glasses can confirm is listed in
+Every change that reaches `main` is a new patch version, so that the version a session's
+manifest records identifies the code that produced it: describe the change under
+`## Unreleased` in `CHANGELOG.md`, then `python scripts/release.py patch` bumps
+`pyproject.toml`, dates the section, commits and tags; `git push origin main vX.Y.Z` makes
+the release workflow build the sdist and wheel and publish the GitHub release with that
+section as its notes. Reinstall afterwards (`pip install -e .`) so that
+`ariastreamlab --version` reports the new number. Behaviour that only the glasses can confirm is listed in
 [docs/validation_checklist.md](docs/validation_checklist.md).
 
 ## Licence

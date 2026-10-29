@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `scripts/release.py`: every change is a patch version — bumps `pyproject.toml`, dates the
+  changelog section, commits and tags in one command.
 - Setup page, from the first hardware validation of 0.2: text can be selected and copied in
   the native window; the Output card wraps long lines and has *copy* and *save* buttons; the
   checks keep their detail beside the name; a conda environment is named as such; the
