@@ -10,7 +10,7 @@ import webbrowser
 from pathlib import Path
 from typing import Any
 
-from ariastreamlab.dashboard.app import nav_header
+from ariastreamlab.dashboard.app import in_native_window, nav_header, pick_path
 from ariastreamlab.dashboard.sessions import delete_session, list_sessions, session_details
 
 __all__ = ["build_home_page", "build_sessions_page"]
@@ -118,6 +118,17 @@ def build_sessions_page(dash: Any, ui: Any) -> None:
         with ui.column().classes("grow gap-2"), ui.card().classes("w-full p-3"):
             with ui.row().classes("items-end gap-2 w-full"):
                 root_in = ui.input("sessions folder", value=str(dash.sessions_root)).classes("grow")
+
+                async def _browse_root() -> None:
+                    chosen = await pick_path("folder", directory=str(root_in.value or ""))
+                    if chosen:
+                        root_in.value = chosen
+                        reload()
+
+                if in_native_window():
+                    ui.button(icon="folder_open", on_click=_browse_root).props("flat").tooltip(
+                        "choose the folder"
+                    )
                 ui.button("refresh", icon="refresh", on_click=lambda: reload()).props("flat")
             table = (
                 ui.table(

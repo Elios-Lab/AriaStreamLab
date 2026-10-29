@@ -10,6 +10,9 @@
 - Design page: every stream has a readable name and a one-line description of what it is
   and what it is for (`Eye-tracking cameras (2)` — "left and right infrared cameras looking
   at the eyes…"), with the configuration key and member streams underneath.
+- Native window: *browse…* next to *load file* opens the system file dialog, the *save as*
+  box has a folder button (save dialog), the Sessions page's folder box a folder dialog; in
+  a browser the text boxes remain.
 - Sessions page: *delete* removes a session directory from disk after a confirmation that
   shows its size; the session currently recording cannot be deleted.
 - `docs/manual.md`: setting up a data-collection project, from the research question to

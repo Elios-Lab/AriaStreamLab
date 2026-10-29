@@ -24,7 +24,13 @@ from ariastreamlab.core.logging import get_logger
 from ariastreamlab.dashboard.state import DashboardState
 from ariastreamlab.monitoring.quality import format_bytes
 
-__all__ = ["Dashboard", "dashboard_available", "get_dashboard"]
+__all__ = [
+    "Dashboard",
+    "dashboard_available",
+    "get_dashboard",
+    "in_native_window",
+    "pick_path",
+]
 
 log = get_logger("ariastreamlab.dashboard")
 
@@ -498,6 +504,63 @@ NAV = (
     ("monitor", "/monitor"),
     ("sessions", "/sessions"),
 )
+
+
+def in_native_window() -> bool:
+    """True when the application runs in the desktop window (pywebview)."""
+    try:
+        from nicegui import app
+
+        return app.native.main_window is not None
+    except Exception:
+        return False
+
+
+async def pick_path(
+    kind: str = "open",
+    *,
+    directory: str = "",
+    filename: str = "",
+    file_types: tuple[str, ...] = ("JSON files (*.json)", "All files (*.*)"),
+) -> str | None:
+    """A native file / save / folder dialog (``kind``: ``open``, ``save``, ``folder``).
+
+    Returns the chosen path, or ``None`` when cancelled or when there is no desktop window
+    (a browser tab has no access to the file system: the text box is the fallback).
+    """
+    if not in_native_window():
+        return None
+    import webview
+    from nicegui import app
+
+    window = app.native.main_window
+    assert window is not None
+    if hasattr(webview, "FileDialog"):
+        dialog_type = {
+            "open": webview.FileDialog.OPEN,
+            "save": webview.FileDialog.SAVE,
+            "folder": webview.FileDialog.FOLDER,
+        }[kind]
+    else:  # pragma: no cover - pywebview < 5.1
+        dialog_type = {
+            "open": webview.OPEN_DIALOG,
+            "save": webview.SAVE_DIALOG,
+            "folder": webview.FOLDER_DIALOG,
+        }[kind]
+    try:
+        result = await window.create_file_dialog(
+            dialog_type=dialog_type,
+            directory=directory,
+            allow_multiple=False,
+            save_filename=filename,
+            file_types=file_types if kind != "folder" else (),
+        )
+    except Exception as exc:  # pragma: no cover - platform dialogs
+        log.warning("app.file_dialog_failed", error=str(exc))
+        return None
+    if not result:
+        return None
+    return str(result[0]) if isinstance(result, (list, tuple)) else str(result)
 
 
 def nav_header(ui: Any, current: str) -> Any:

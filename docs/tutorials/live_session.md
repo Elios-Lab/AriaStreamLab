@@ -136,5 +136,6 @@ is not restarted). Set `device.connection.hotspot.start: false` to skip the ques
 | `start_streaming failed … already streaming` | a previous session was not stopped: `aria_gen2 streaming stop` |
 | rates lower than nominal, device reports 0 drops | first check the summary's *coverage*: an outage is not a rate problem. Otherwise transport loss between the glasses and the laptop (visible as gaps in the VRS); move closer, use 5 GHz, or tether |
 | eye gaze at 25 Hz in the first seconds | a start-up transient; it settles at 30 Hz (measured over 9 min in run 15) |
+| `aria_gen2 device list` shows the glasses but every command fails with `Unable to connect to device: (9) Failed to read data from socket: asio.ssl error` | the device's control service is stuck — seen after a session that ended through thermal mitigation; restart the glasses (hold the button until off, power on, wait a minute) and retry; `aria_gen2 --ble --serial <serial> …` reaches the device meanwhile |
 | rates fine, then `stream stalled` and the session ends | the glasses stopped streaming — almost always thermal mitigation (Device card: skin temperature ≥ 42 °C, charging); let them cool, do not charge while streaming wirelessly |
 | `stop_streaming failed … No active session to stop` | the device had already ended the session (thermal mitigation); harmless, the session is finalised normally |

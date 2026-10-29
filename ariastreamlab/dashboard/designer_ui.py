@@ -125,7 +125,7 @@ def _model_form(
 
 def build_design_page(dash: Any, ui: Any) -> None:
     """Render the designer page for ``dash.designer``."""
-    from ariastreamlab.dashboard.app import nav_header
+    from ariastreamlab.dashboard.app import in_native_window, nav_header, pick_path
 
     designer: Designer = dash.designer
     rev = {"shown": -1, "current": 0}
@@ -148,8 +148,8 @@ def build_design_page(dash: Any, ui: Any) -> None:
             "w-[260px]"
         )
 
-        def _load() -> None:
-            p = Path(str(load_path.value or "")).expanduser()
+        def _load(path: str | None = None) -> None:
+            p = Path(str(path or load_path.value or "")).expanduser()
             if not p.is_absolute():
                 p = designer.base_dir / p
             try:
@@ -159,7 +159,15 @@ def build_design_page(dash: Any, ui: Any) -> None:
                 return
             ui.navigate.to("/design")
 
-        ui.button("load", on_click=_load).props("flat color=white")
+        async def _browse() -> None:
+            chosen = await pick_path("open", directory=str(designer.base_dir))
+            if chosen:
+                load_path.value = chosen
+                _load(chosen)
+
+        if in_native_window():
+            ui.button("browse…", icon="folder_open", on_click=_browse).props("flat color=white")
+        ui.button("load", on_click=lambda: _load()).props("flat color=white")
 
     doc = designer.doc
     with ui.row().classes("w-full px-2 gap-2 items-start flex-nowrap"):
@@ -463,6 +471,24 @@ def build_design_page(dash: Any, ui: Any) -> None:
             with ui.card().classes("w-full p-3"):
                 with ui.row().classes("items-end gap-2 w-full"):
                     save_path = ui.input("save as", value="experiment.json").classes("grow")
+
+                    async def _save_as() -> None:
+                        current = Path(str(save_path.value or "experiment.json"))
+                        chosen = await pick_path(
+                            "save",
+                            directory=str(
+                                current.parent if current.is_absolute() else designer.base_dir
+                            ),
+                            filename=current.name,
+                        )
+                        if chosen:
+                            save_path.value = chosen
+                            _save()
+
+                    if in_native_window():
+                        ui.button(icon="folder_open", on_click=_save_as).props(
+                            "flat dense"
+                        ).tooltip("choose where to save")
 
                     def _save() -> None:
                         rep = designer.validate()
