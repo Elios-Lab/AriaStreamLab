@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.2 — 2026-10-29
 
 - `scripts/release.py`: every change is a patch version — bumps `pyproject.toml`, dates the
   changelog section, commits and tags in one command.
