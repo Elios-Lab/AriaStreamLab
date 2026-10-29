@@ -7,6 +7,11 @@
   checks keep their detail beside the name; a conda environment is named as such; the
   `device list` check says what is reachable and what is paired instead of echoing the CLI's
   last line; the install buttons use `uv pip` in an environment that has no pip module.
+- Design page: every stream has a readable name and a one-line description of what it is
+  and what it is for (`Eye-tracking cameras (2)` — "left and right infrared cameras looking
+  at the eyes…"), with the configuration key and member streams underneath.
+- Sessions page: *delete* removes a session directory from disk after a confirmation that
+  shows its size; the session currently recording cannot be deleted.
 - `docs/manual.md`: setting up a data-collection project, from the research question to
   analysed sessions, with three worked projects in `examples/projects/` (gaze on fixation
   targets, visual search on a desk, walking laps), each with its experiment file, protocol

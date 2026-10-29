@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from ariastreamlab.dashboard.app import nav_header
-from ariastreamlab.dashboard.sessions import list_sessions, session_details
+from ariastreamlab.dashboard.sessions import delete_session, list_sessions, session_details
 
 __all__ = ["build_home_page", "build_sessions_page"]
 
@@ -176,6 +176,9 @@ def build_sessions_page(dash: Any, ui: Any) -> None:
                     ui.button("stop current run", icon="stop", on_click=dash.stop_run).props(
                         "flat color=red"
                     )
+                    ui.button("delete", icon="delete", on_click=lambda: ask_delete()).props(
+                        "flat color=red"
+                    ).tooltip("remove this session directory from disk (asks first)")
                 summary_code = ui.code("", language="text").classes(
                     "w-full text-xs overflow-x-auto"
                 )
@@ -229,6 +232,52 @@ def build_sessions_page(dash: Any, ui: Any) -> None:
                     )
                 problems_md = ui.markdown("").classes("text-sm text-amber-400")
             detail_card.visible = True
+
+    with ui.dialog() as delete_dialog, ui.card():
+        delete_text = ui.markdown("")
+        with ui.row():
+
+            def _confirm_delete() -> None:
+                delete_dialog.close()
+                p = selected["path"]
+                if p is None:
+                    return
+                rs = dash.run_state()
+                active = (
+                    Path(rs["session_dir"])
+                    if rs and rs.get("running") and rs.get("session_dir")
+                    else None
+                )
+                try:
+                    freed = delete_session(p, active=active)
+                except (ValueError, OSError) as exc:
+                    ui.notify(str(exc), type="negative")
+                    return
+                ui.notify(f"deleted {p.name} ({freed / 1e6:.1f} MB freed)")
+                selected["path"] = None
+                detail_title.text = "select a session"
+                detail_meta.content = ""
+                summary_code.content = ""
+                events_table.rows = []
+                intervals_table.rows = []
+                problems_md.content = ""
+                table.selected = []
+                reload()
+
+            ui.button("delete permanently", color="red", on_click=_confirm_delete)
+            ui.button("cancel", on_click=delete_dialog.close).props("flat")
+
+    def ask_delete() -> None:
+        p = selected["path"]
+        if p is None:
+            ui.notify("select a session first", type="warning")
+            return
+        d = session_details(p)
+        delete_text.content = (
+            f"Delete **{p.name}** ({d.size_text}, {len(d.raw_files)} raw file(s))?  \n"
+            f"`{p}`  \n\nThe directory is removed from disk. This cannot be undone."
+        )
+        delete_dialog.open()
 
     def reload() -> None:
         root = Path(str(root_in.value or "")).expanduser()

@@ -14,7 +14,12 @@ from typing import Any
 
 from ariastreamlab.monitoring.quality import QualitySummary, format_bytes
 
-__all__ = ["SessionRow", "list_sessions", "session_details"]
+__all__ = [
+    "SessionRow",
+    "delete_session",
+    "list_sessions",
+    "session_details",
+]
 
 
 @dataclass
@@ -155,3 +160,23 @@ def session_details(path: Path | str) -> SessionDetails:
     except Exception as exc:
         out.problems.append(f"events: {exc}")
     return out
+
+
+def delete_session(path: Path, *, active: Path | None = None) -> int:
+    """Remove a session directory; returns the bytes freed.
+
+    Refuses anything that is not a session directory (no ``manifest.json`` and no
+    ``experiment.json``), and the session that is currently recording (``active``).
+    """
+    import shutil
+
+    from ariastreamlab.monitoring.health import directory_size
+
+    p = Path(path).resolve()
+    if not p.is_dir() or not ((p / "manifest.json").exists() or (p / "experiment.json").exists()):
+        raise ValueError(f"{p} is not a session directory")
+    if active is not None and Path(active).resolve() == p:
+        raise ValueError("this session is still recording — stop it first")
+    size = directory_size(p)
+    shutil.rmtree(p)
+    return size

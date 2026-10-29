@@ -330,3 +330,25 @@ def test_sessions_browser_model(tmp_path: Path) -> None:
     assert d.problems == []
     bad = session_details(broken)
     assert bad.problems and "manifest" in bad.problems[0]
+
+
+def test_delete_session_removes_only_session_directories(tmp_path: Path) -> None:
+    from ariastreamlab.dashboard.sessions import delete_session
+
+    not_a_session = tmp_path / "plain"
+    not_a_session.mkdir()
+    (not_a_session / "x.txt").write_text("x")
+    with pytest.raises(ValueError):
+        delete_session(not_a_session)
+    assert not_a_session.exists()
+
+    session = tmp_path / "20260101T000000Z_exp_P1"
+    session.mkdir()
+    (session / "manifest.json").write_text("{}")
+    (session / "raw").mkdir()
+    (session / "raw" / "big.vrs").write_bytes(b"0" * 1000)
+    with pytest.raises(ValueError):  # the one currently recording
+        delete_session(session, active=session)
+    assert session.exists()
+    freed = delete_session(session, active=tmp_path / "other")
+    assert freed >= 1000 and not session.exists()

@@ -125,6 +125,48 @@ def fields_of(model: type[BaseModel]) -> list[FieldSpec]:
 
 
 # ----------------------------------------------------------------------------- catalogue
+STREAM_TITLES: dict[str, tuple[str, str]] = {
+    "rgb": ("RGB camera", "the forward colour camera — what the participant sees"),
+    "slam": (
+        "SLAM cameras (4)",
+        "front-left, front-right, side-left, side-right: 512×512 monochrome, wide field of "
+        "view — what the on-device VIO tracks with",
+    ),
+    "et": (
+        "Eye-tracking cameras (2)",
+        "left and right infrared cameras looking at the eyes, 200×200 — what the on-device "
+        "gaze is computed from; also the only way to see that the glasses sit correctly",
+    ),
+    "imu": ("IMUs (2)", "left and right accelerometer + gyroscope at 800 Hz — head motion"),
+    "magnetometer": ("Magnetometer", "3-axis magnetic field — heading"),
+    "barometer": ("Barometer", "air pressure and temperature — altitude changes, stairs"),
+    "audio": ("Microphones", "7-channel array + 1 contact mic, 16 kHz, delivered in 20 ms chunks"),
+    "gps": ("GPS (glasses)", "the glasses' own GNSS fix, outdoors"),
+    "gps_app": ("GPS (phone)", "the Companion App phone's location"),
+    "wifi_beacons": (
+        "Wi-Fi beacons",
+        "scan results: networks and signal strength — coarse indoor position",
+    ),
+    "ble_beacons": ("BLE beacons", "Bluetooth scan results — coarse indoor position"),
+    "ppg": ("PPG (heart rate)", "photoplethysmography from the nose pad"),
+    "als": ("Ambient light", "ambient light level"),
+    "temperature": ("Device temperature", "the device's temperature sensors"),
+    "eye_gaze": (
+        "Eye gaze",
+        "the on-device gaze estimate: yaw, pitch, depth and validity, in the CPF frame — "
+        "project it onto the RGB frame with gaze.project_to_rgb",
+    ),
+    "hand_tracking": ("Hand tracking", "on-device 3-D landmarks of both hands with confidences"),
+    "vio": (
+        "VIO pose",
+        "on-device visual-inertial odometry: position, orientation and velocity in the "
+        "odometry frame — where the participant is and which way the head points",
+    ),
+    "vio_high_frequency": ("VIO at 800 Hz", "the open-loop trajectory at IMU rate"),
+}
+"""A researcher-facing title and one-line description per ``streams`` key."""
+
+
 @dataclass(frozen=True)
 class StreamEntry:
     """A key a user may write under ``streams`` and what it controls."""
@@ -133,6 +175,17 @@ class StreamEntry:
     members: tuple[str, ...]
     descriptor: StreamDescriptor
     parameters: tuple[ParameterSpec, ...]
+
+    @property
+    def title(self) -> str:
+        """A readable name (``"Eye-tracking cameras (2)"``)."""
+        return STREAM_TITLES.get(self.key, (self.key.replace("_", " "), ""))[0]
+
+    @property
+    def description(self) -> str:
+        """What the stream is and what it is for."""
+        own = STREAM_TITLES.get(self.key, ("", ""))[1]
+        return own or self.descriptor.description
 
     @property
     def live(self) -> bool:  # noqa: D102

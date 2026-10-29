@@ -183,8 +183,8 @@ def build_design_page(dash: Any, ui: Any) -> None:
                 def streams_section() -> None:
                     for entry in Designer.stream_entries():
                         enabled = designer.stream_enabled(entry.key)
-                        with ui.row().classes("items-center gap-3 w-full"):
-                            sw = ui.switch(entry.key, value=enabled).classes("w-[170px]")
+                        with ui.row().classes("items-center gap-3 w-full flex-nowrap"):
+                            sw = ui.switch(entry.title, value=enabled).classes("w-[230px] shrink-0")
 
                             def _toggle(e: Any, key: str = entry.key) -> None:
                                 designer.set_stream_enabled(key, bool(e.value))
@@ -193,19 +193,29 @@ def build_design_page(dash: Any, ui: Any) -> None:
                                 processors_section.refresh()
 
                             sw.on_value_change(_toggle)
-                            members = ", ".join(entry.members) if len(entry.members) > 1 else ""
                             d = entry.descriptor
                             meta = (
-                                f"{d.category}"
-                                + (f" · {d.nominal_rate_hz:g} Hz" if d.nominal_rate_hz else "")
-                                + ("" if entry.live else " · VRS only")
+                                f"`{entry.key}`"
+                                + (
+                                    " → " + ", ".join(f"`{m}`" for m in entry.members)
+                                    if len(entry.members) > 1
+                                    else ""
+                                )
+                                + f" · {d.category}"
+                                + (
+                                    f" · {d.nominal_rate_hz:g} Hz nominal"
+                                    if d.nominal_rate_hz
+                                    else ""
+                                )
+                                + ("" if entry.live else " · **VRS only** (no live data)")
                             )
-                            ui.label(meta).classes(
-                                "text-xs w-[170px] "
-                                + ("opacity-80" if entry.live else "opacity-40")
-                            )
-                            if members:
-                                ui.label(members).classes("text-xs opacity-60 w-[260px]")
+                            with ui.column().classes("gap-0 w-[380px] shrink-0"):
+                                ui.label(entry.description).classes(
+                                    "text-xs " + ("opacity-80" if entry.live else "opacity-40")
+                                )
+                                ui.markdown(meta).classes(
+                                    "text-xs " + ("opacity-60" if entry.live else "opacity-40")
+                                )
                             if enabled:
                                 for spec in entry.parameters:
                                     cur = designer.stream_param(entry.key, spec.name)
@@ -534,7 +544,8 @@ def build_design_page(dash: Any, ui: Any) -> None:
                 pl = rep.plan
                 lines.append(
                     f"**live plan** · {pl.interface} · {pl.profile_name or 'custom profile'}"
-                    f" · batch {pl.batch_period_ms} ms · streams: {', '.join(pl.streams) or '–'}"
+                    f" · batch {pl.batch_period_ms} ms · streams: "
+                    + (", ".join(f"`{s}`" for s in pl.streams) or "–")
                 )
             if rep.config is not None:
                 lines.append(

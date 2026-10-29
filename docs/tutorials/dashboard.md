@@ -19,8 +19,9 @@ environment itself: `scripts/install.sh` / `install.ps1` do that.
 
 The **Sessions** page lists the session directories under the experiment's `storage.root`
 (editable), shows the selected session's manifest facts, quality summary, events and
-intervals, replays it through the pipeline at the chosen speed (the monitor opens on it) and
-opens its folder in the file manager.
+intervals, replays it through the pipeline at the chosen speed (the monitor opens on it), opens
+its folder in the file manager, and deletes it from disk after a confirmation (never the
+one currently recording).
 
 ## The monitor
 
