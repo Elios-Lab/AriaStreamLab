@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.3 — 2026-10-29
 
 - A session started from the application window tried to start a second dashboard server
   (NiceGUI: "Unable to register another startup handler") — `Dashboard.start()` now
