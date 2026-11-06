@@ -8,6 +8,7 @@ drift between the two can be analysed offline.
 
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass
 
@@ -72,6 +73,23 @@ class HostClock:
                 time.sleep(0)
             # else: spin for the last ~50 µs
 
+    def wait_until_ns(self, target_ns: int, interrupt: threading.Event) -> bool:
+        """Like :meth:`sleep_until_ns`, but returns ``False`` early once ``interrupt`` is set.
+
+        ``True`` when ``target_ns`` was reached. The coarse part waits on the event, so a pause,
+        seek or stop takes effect at once instead of after a long gap in a recording.
+        """
+        while True:
+            if interrupt.is_set():
+                return False
+            remaining = target_ns - self.now_ns()
+            if remaining <= 0:
+                return True
+            if remaining > 2_000_000:
+                interrupt.wait((remaining - 1_000_000) / 1e9)
+            elif remaining > 50_000:
+                time.sleep(0)
+
 
 class FakeClock(HostClock):
     """Deterministic clock for tests: time only advances when told to."""
@@ -89,3 +107,9 @@ class FakeClock(HostClock):
     def sleep_until_ns(self, target_ns: int) -> None:  # noqa: D102
         if target_ns > self._now:
             self._now = target_ns
+
+    def wait_until_ns(self, target_ns: int, interrupt: threading.Event) -> bool:  # noqa: D102
+        if interrupt.is_set():
+            return False
+        self.sleep_until_ns(target_ns)
+        return True

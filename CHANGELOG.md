@@ -34,6 +34,16 @@
   read and write files, delete sessions, install packages and start sessions — answer only
   the computer running the experiment; other machines get the monitor. A warning is logged
   when the server listens beyond loopback, and the tutorial says what is exposed.
+- Replay controls act at once: pause, seek, speed and stop interrupt the pacing wait
+  instead of waiting for the next sample — across a multi-second hole in a recording they
+  were dead for the whole gap (30 s at 0.25×) and `stop()` timed out. Seeking a paused replay
+  keeps it paused at the target (it used to resume), and the position shows the target.
+- Markers and intervals added during a replay (dashboard buttons, `mark()`/`begin()`/`end()`
+  without `at_ns`) are stamped at the replay position; the host-clock estimate they used
+  was wrong after a pause, a seek or at any speed other than 1×.
+- VRS replay after a seek or with `--start`: sequence numbers continue from each stream's
+  record index in the file instead of restarting at 0 (the statistics saw duplicates and
+  the recorded `sequence_number` was wrong).
 
 ## 0.2.3 — 2026-10-29
 

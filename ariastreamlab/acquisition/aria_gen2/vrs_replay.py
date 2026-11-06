@@ -15,7 +15,6 @@ from __future__ import annotations
 import contextlib
 import threading
 import time
-from collections import Counter
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -109,6 +108,13 @@ class VrsReplaySource(PacedReplay):
             hi = b if hi is None else max(hi, b)
         return None if lo is None or hi is None else (int(lo), int(hi))
 
+    def _record_index(self, stream_id: str, ts: int) -> int:
+        try:
+            return _record_index_of(self._provider, self._ids[stream_id], ts)
+        except Exception:
+            log.warning("replay.record_index_unavailable", stream=stream_id, exc_info=True)
+            return 0
+
     def _iter_from(self, start_ns: int | None) -> Iterator[Sample]:
         from projectaria_tools.core.sensor_data import SensorDataType, TimeDomain
 
@@ -133,13 +139,18 @@ class VrsReplaySource(PacedReplay):
                 self._provenance,
                 {"note": "from VRS file"},
             )
-        seq: Counter[str] = Counter()
+        # sequence number = record index in the file, as live (counted from the stream's first
+        # sample); after a seek or a start window the count starts at the first record
+        # delivered, not at 0
+        seq: dict[str, int] = {}
         for sd in self._provider.deliver_queued_sensor_data(opts):
             stream_id = id_to_stream.get(str(sd.stream_id()))
             if stream_id is None:
                 continue
             t = sd.sensor_data_type()
             ts = int(sd.get_time_ns(TimeDomain.DEVICE_TIME))
+            if stream_id not in seq:
+                seq[stream_id] = 0 if start_ns is None else self._record_index(stream_id, ts)
             meta: dict[str, Any] = {}
             data: Any
             if t == SensorDataType.IMAGE:
@@ -205,6 +216,14 @@ class VrsReplaySource(PacedReplay):
                 self._provenance,
                 {"label": REGISTRY.get(stream_id).native_label, **meta},
             )
+
+
+def _record_index_of(provider: Any, vrs_id: Any, ts: int) -> int:
+    """Index of the record of ``vrs_id`` stamped ``ts`` (device time) in the file."""
+    from projectaria_tools.core.sensor_data import TimeDomain, TimeQueryOptions
+
+    i = provider.get_index_by_time_ns(vrs_id, ts, TimeDomain.DEVICE_TIME, TimeQueryOptions.CLOSEST)
+    return max(int(i), 0)
 
 
 class SdkReplaySource(Source):

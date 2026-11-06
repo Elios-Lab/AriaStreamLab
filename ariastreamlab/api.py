@@ -593,15 +593,17 @@ class Experiment:
 
         Without ``at_ns`` the event is stamped now and its device time is estimated from the
         samples seen so far; pass a sample's ``device_timestamp_ns`` as ``at_ns`` to annotate
-        exactly that instant (e.g. from a processor callback or a replay).
+        exactly that instant (e.g. from a processor callback). During a replay the default is
+        the replay's position — the host clock says nothing about a recording that is paused,
+        sought or played at another speed.
         """
-        return self.events.mark(name, payload, at_ns=at_ns)
+        return self.events.mark(name, payload, at_ns=self._annotation_time(at_ns))
 
     def begin(
         self, name: str, payload: Mapping[str, Any] | None = None, *, at_ns: int | None = None
     ) -> str:
         """Open an interval annotation (``trial``, ``condition``…); returns its id."""
-        return self.events.begin(name, payload, at_ns=at_ns)
+        return self.events.begin(name, payload, at_ns=self._annotation_time(at_ns))
 
     def end(
         self,
@@ -611,7 +613,15 @@ class Experiment:
         at_ns: int | None = None,
     ) -> str:
         """Close an interval opened with :meth:`begin` (by id, or the latest with that name)."""
-        return self.events.end(name_or_id, payload, at_ns=at_ns)
+        return self.events.end(name_or_id, payload, at_ns=self._annotation_time(at_ns))
+
+    def _annotation_time(self, at_ns: int | None) -> int | None:
+        """``at_ns``, or — replaying — the device time of the last replayed sample."""
+        if at_ns is not None:
+            return at_ns
+        rc = self.replay_control
+        pos = getattr(rc, "position_ns", None) if rc is not None else None
+        return int(pos) if pos is not None else None
 
     def intervals(self, name: str | None = None) -> list[Interval]:
         """The ``begin``/``end`` pairs recorded so far."""

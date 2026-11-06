@@ -78,6 +78,9 @@ class PacedReplay(Source):
         self._resume = threading.Event()
         self._resume.set()
         self._seek_to: int | None = None
+        # set by every control (pause, seek, speed, stop): wakes the pacing wait so a control
+        # acts at once, not after the gap to the next sample (7.9 s holes exist, §0.11)
+        self._wake = threading.Event()
         self._lock = threading.Lock()
         self._received: Counter[str] = Counter()
         self._position_ns: int | None = None
@@ -104,6 +107,7 @@ class PacedReplay(Source):
     def stop(self) -> None:  # noqa: D102
         self._stop.set()
         self._resume.set()
+        self._wake.set()
         t = self._thread
         if t is not None and t is not threading.current_thread():
             t.join(timeout=10)
@@ -120,24 +124,28 @@ class PacedReplay(Source):
     # -- ReplayControl -----------------------------------------------------------------
     def pause(self) -> None:  # noqa: D102
         self._resume.clear()
+        self._wake.set()
 
     def resume(self) -> None:  # noqa: D102
         self._resume.set()
+        self._wake.set()
 
     @property
     def paused(self) -> bool:  # noqa: D102
         return not self._resume.is_set()
 
-    def seek(self, device_timestamp_ns: int) -> None:  # noqa: D102
+    def seek(self, device_timestamp_ns: int) -> None:
+        """Continue from ``device_timestamp_ns``; a paused replay stays paused there."""
         with self._lock:
             self._seek_to = int(device_timestamp_ns)
-        self._resume.set()
+        self._wake.set()
 
     def set_speed(self, multiplier: float) -> None:  # noqa: D102
         if multiplier < 0:
             raise ReplayError("speed must be >= 0")
         with self._lock:
             self._speed = float(multiplier)  # the engine re-anchors pacing when it notices
+        self._wake.set()
 
     @property
     def position_ns(self) -> int | None:
@@ -168,29 +176,41 @@ class PacedReplay(Source):
                 anchor_host = 0
                 restarted = False
                 for sample in self._iter_from(start):
-                    if self._stop.is_set():
-                        break
                     ts = sample.device_timestamp_ns
                     if self._end_ns is not None and ts > self._end_ns:
                         break
-                    if not self._resume.is_set():  # paused
-                        self._resume.wait()
-                        anchor_dev = None  # re-anchor after a pause
-                    seek_to = self._pending_seek()
+                    # Decide when to publish this sample. Any control wakes the pacing wait;
+                    # the loop then re-reads the state (clear the wake flag *before* reading,
+                    # so a control arriving meanwhile is never lost).
+                    while True:
+                        self._wake.clear()
+                        if self._stop.is_set():
+                            break
+                        seek_to = self._pending_seek()
+                        if seek_to is not None:
+                            break
+                        if not self._resume.is_set():  # paused: wait for resume/seek/stop
+                            anchor_dev = None  # re-anchor after a pause
+                            self._wake.wait(0.5)
+                            continue
+                        with self._lock:
+                            if self._speed != speed:
+                                speed = self._speed
+                                anchor_dev = None
+                        if speed <= 0:
+                            break
+                        if anchor_dev is None:
+                            anchor_dev, anchor_host = ts, self._clock.now_ns()
+                            break
+                        target = anchor_host + int((ts - anchor_dev) / speed)
+                        if self._clock.wait_until_ns(target, self._wake):
+                            break
+                    if self._stop.is_set():
+                        break
                     if seek_to is not None:
                         start = seek_to
                         restarted = True
-                        break
-                    with self._lock:
-                        if self._speed != speed:
-                            speed = self._speed
-                            anchor_dev = None
-                    if speed > 0:
-                        if anchor_dev is None:
-                            anchor_dev, anchor_host = ts, self._clock.now_ns()
-                        else:
-                            self._clock.sleep_until_ns(anchor_host + int((ts - anchor_dev) / speed))
-                    if self._stop.is_set():
+                        self._position_ns = seek_to  # what a paused replay now shows
                         break
                     sample = self._restamp(sample)
                     bus.publish(f"raw.{sample.stream_id}", sample)

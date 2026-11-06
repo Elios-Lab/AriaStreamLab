@@ -222,3 +222,175 @@ def test_make_replay_source_errors(tmp_path: Path) -> None:
     root = _mock_session(tmp_path, save_mock_raw=False)
     with pytest.raises(ReplayError, match="no raw stream"):
         make_replay_source(root, session_id="x")
+
+
+def _until(pred: object, timeout: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while not pred() and time.monotonic() < deadline:  # type: ignore[operator]
+        time.sleep(0.005)
+    return bool(pred())  # type: ignore[operator]
+
+
+def test_seek_while_paused_stays_paused_at_the_target() -> None:
+    bus = EventBus()
+    sub = bus.subscribe("raw.*", maxsize=10_000)
+    src = ListReplay([i * 10_000_000 for i in range(1000)], speed=1.0, clock=FakeClock(0))
+    src.pause()
+    src.start(bus)
+    time.sleep(0.05)
+    src.seek(500_000_000)
+    time.sleep(0.2)
+    assert src.paused, "seeking must not resume a paused replay"
+    assert sub.drain() == []
+    assert src.position_ns == 500_000_000  # the dashboard shows where it now stands
+    src.resume()
+    assert _until(lambda: src.stats().received.get("s", 0) >= 3)
+    src.stop()
+    assert sub.drain()[0].sequence_number == 50
+
+
+def test_controls_act_at_once_during_a_long_gap_in_the_recording() -> None:
+    """Recordings have multi-second transport holes (§0.11): pause, seek and stop must not
+    wait for the next sample."""
+    bus = EventBus()
+    sub = bus.subscribe("raw.*", maxsize=10_000)
+    gap = 30_000_000_000
+    src = ListReplay([0, 1_000_000, gap, gap + 1_000_000], speed=1.0)  # the real clock
+    src.start(bus)
+    assert _until(lambda: src.stats().received.get("s", 0) == 2)
+    src.pause()  # during the 30 s gap
+    time.sleep(0.1)
+    src.seek(gap)
+    time.sleep(0.2)
+    assert src.paused and src.stats().received["s"] == 2
+    t0 = time.monotonic()
+    src.resume()
+    assert _until(lambda: src.stats().received.get("s", 0) == 4, timeout=2.0)
+    assert time.monotonic() - t0 < 1.0
+    src.stop()
+    assert [s.sequence_number for s in sub.drain()] == [0, 1, 2, 3]
+
+    src2 = ListReplay([0, 60_000_000_000], speed=1.0)
+    src2.start(bus)
+    assert _until(lambda: src2.stats().received.get("s", 0) == 1)
+    t0 = time.monotonic()
+    src2.stop()
+    assert time.monotonic() - t0 < 1.0  # not the 10 s join timeout
+
+
+def test_annotations_during_a_replay_use_the_replay_position(tmp_path: Path) -> None:
+    root = _mock_session(tmp_path)
+    rep = Experiment.replay(root, speed=0.25)
+    with rep:
+        rep.start()
+        ctl = rep.replay_control
+        assert ctl is not None
+        assert _until(lambda: ctl.position_ns is not None)
+        ctl.pause()
+        time.sleep(0.3)  # host time passes, the recording does not
+        pos = ctl.position_ns
+        ev = rep.mark("paused_here")
+        assert ev.device_timestamp_ns == pos and ev.timestamp_source == "device"
+        target = pos + 400_000_000
+        ctl.seek(target)
+        assert _until(lambda: ctl.position_ns == target)
+        iid = rep.begin("trial")
+        rep.end(iid)
+        rep.stop()
+        assert rep.wait(10)
+    (interval,) = rep.intervals("trial")
+    assert interval.start_ns == target and interval.end_ns == target
+
+
+# --------------------------------------------------------------------------- VRS sequence numbers
+
+
+def _fake_projectaria(monkeypatch: pytest.MonkeyPatch) -> object:
+    import enum
+    import sys
+    import types
+
+    class SensorDataType(enum.Enum):
+        IMAGE, IMU, MAGNETOMETER, BAROMETER, AUDIO, EYE_GAZE = range(6)
+        HAND_POSE, VIO, VIO_HIGH_FREQ, PPG, ALS, GPS = range(6, 12)
+
+    sd = types.ModuleType("projectaria_tools.core.sensor_data")
+    sd.SensorDataType = SensorDataType  # type: ignore[attr-defined]
+    sd.TimeDomain = types.SimpleNamespace(DEVICE_TIME="device")  # type: ignore[attr-defined]
+    sd.TimeQueryOptions = types.SimpleNamespace(CLOSEST="closest")  # type: ignore[attr-defined]
+    pkg, core = types.ModuleType("projectaria_tools"), types.ModuleType("projectaria_tools.core")
+    for name, mod in (
+        ("projectaria_tools", pkg),
+        ("projectaria_tools.core", core),
+        ("projectaria_tools.core.sensor_data", sd),
+    ):
+        monkeypatch.setitem(sys.modules, name, mod)
+    return SensorDataType
+
+
+class _Opts:
+    truncate = 0
+
+    def deactivate_stream_all(self) -> None: ...
+
+    def activate_stream(self, sid: object) -> None: ...
+
+    def set_truncate_first_device_time_ns(self, ns: int) -> None:
+        self.truncate = ns
+
+
+class _Record:
+    def __init__(self, ts: int, kind: object) -> None:
+        self.ts, self.kind = ts, kind
+
+    def stream_id(self) -> str:
+        return "1202-1"
+
+    def sensor_data_type(self) -> object:
+        return self.kind
+
+    def get_time_ns(self, domain: object) -> int:
+        return self.ts
+
+    def imu_data(self) -> int:
+        return self.ts
+
+
+class _Provider:
+    def __init__(self, ts: list[int], kind: object) -> None:
+        self.ts, self.kind = ts, kind
+
+    def get_default_deliver_queued_options(self) -> _Opts:
+        return _Opts()
+
+    def get_first_time_ns(self, sid: object, domain: object) -> int:
+        return self.ts[0]
+
+    def get_last_time_ns(self, sid: object, domain: object) -> int:
+        return self.ts[-1]
+
+    def deliver_queued_sensor_data(self, opts: _Opts) -> Iterator[_Record]:
+        for t in self.ts:
+            if t >= self.ts[0] + opts.truncate:
+                yield _Record(t, self.kind)
+
+    def get_index_by_time_ns(self, sid: object, ts: int, domain: object, opt: object) -> int:
+        return self.ts.index(ts)
+
+
+def test_vrs_replay_keeps_record_indices_after_a_seek(monkeypatch: pytest.MonkeyPatch) -> None:
+    from ariastreamlab.acquisition.aria_gen2 import convert as cv
+    from ariastreamlab.acquisition.aria_gen2.vrs_replay import VrsReplaySource
+
+    kinds = _fake_projectaria(monkeypatch)
+    monkeypatch.setattr(cv, "imu_to_payload", lambda d: d)
+    ts = [1_000_000_000 + i * 1_250_000 for i in range(20)]
+    src = object.__new__(VrsReplaySource)
+    src._provider = _Provider(ts, kinds.IMU)  # type: ignore[attr-defined]
+    src._ids = {"imu_left": "1202-1"}
+    src.calibration = None
+    PacedReplay.__init__(src, streams=("imu_left",), source_id="vrs:x", session_id="s")
+    assert [s.sequence_number for s in src._iter_from(None)] == list(range(20))
+    after_seek = list(src._iter_from(ts[7]))
+    assert after_seek[0].device_timestamp_ns == ts[7]
+    assert [s.sequence_number for s in after_seek] == list(range(7, 20))
