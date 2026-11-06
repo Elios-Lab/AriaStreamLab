@@ -24,6 +24,16 @@
   The quality-stats parser no longer raises on a non-numeric `score`.
 - Tests: the example-project tests no longer assume a non-realtime mock session is still
   running 0.3 s after it starts.
+- Dashboard, sessions it did not start: Sessions → *delete* refuses the session attached to
+  the dashboard whatever started it (`ariastreamlab run`, a notebook, a protocol script) —
+  before, only a browser-started run was protected — and a session another process is still
+  writing (manifest `running`, a file changed in the last 2 min). *Run* on Design and
+  *replay* on Sessions refuse to start while any session is attached, instead of starting a
+  second session against the same glasses and taking the dashboard over.
+- Dashboard on the network (`host: "0.0.0.0"`): *Design*, *Sessions* and *Setup* — which
+  read and write files, delete sessions, install packages and start sessions — answer only
+  the computer running the experiment; other machines get the monitor. A warning is logged
+  when the server listens beyond loopback, and the tutorial says what is exposed.
 
 ## 0.2.3 — 2026-10-29
 

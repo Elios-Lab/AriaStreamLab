@@ -254,7 +254,9 @@ def build_sessions_page(dash: Any, ui: Any) -> None:
                 if p is None:
                     return
                 rs = dash.run_state()
-                active = (
+                # any session attached here (browser, `ariastreamlab run`, a notebook), or a
+                # browser run that has not attached yet
+                active = dash.active_session_dir() or (
                     Path(rs["session_dir"])
                     if rs and rs.get("running") and rs.get("session_dir")
                     else None

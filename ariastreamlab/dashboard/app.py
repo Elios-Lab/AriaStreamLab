@@ -10,6 +10,7 @@ the two hooks — it never touches the source or the recorders.
 from __future__ import annotations
 
 import contextlib
+import ipaddress
 import json
 import os
 import threading
@@ -78,9 +79,10 @@ class Dashboard:
         self._serving = False
         self._ready = threading.Event()
         self._failed = threading.Event()  # set by the server thread when ui.run() raised
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()  # launch() holds it while checking active_session()
         self._pages_built = False
         self._generation = 0
+        self._attached = False  # a session is attached and has not detached yet
         # the experiment designer (/design) and sessions started from it
         self._designer: Any = None
         self.last_saved: Path | None = None
@@ -194,18 +196,48 @@ class Dashboard:
             self.replay_range_s = replay_range_s
             self.replay_t0_ns = replay_t0_ns
             self._generation += 1
+            self._attached = True
 
     def detach(self, state: DashboardState | None = None) -> None:
         """Keep showing the last state, but drop the hooks (the session is over)."""
         with self._lock:
             if state is not None and self.state is not state:
                 return
+            self._attached = False
             self.on_mark = None
             self.on_begin = None
             self.on_end = None
             self.on_set_parameters = None
             self.parameter_forms = None
             self.replay = None
+
+    def active_session(self) -> dict[str, Any] | None:
+        """The session attached to this dashboard and still open, or ``None``.
+
+        Any origin counts — the browser, ``ariastreamlab run``, a notebook; the value is the
+        session's ``session`` info (experiment, origin, directory, state).
+        """
+        with self._lock:
+            if not self._attached or self.state is None:
+                return None
+            return dict(self.state.session or {})
+
+    def active_session_dir(self) -> Path | None:
+        """Directory of :meth:`active_session` (``None`` when there is none)."""
+        sess = self.active_session()
+        d = None if sess is None else sess.get("directory")
+        return Path(d) if d else None
+
+    def _refuse_second_session(self) -> None:
+        """Raise when a session started here — or attached from anywhere — is still running."""
+        if self._run is not None and self._run.running:
+            raise RuntimeError("a session started from the browser is still running")
+        sess = self.active_session()
+        if sess is not None:
+            raise RuntimeError(
+                f"a session is already running in this process ({sess.get('experiment', '?')}, "
+                f"{sess.get('origin', '?')}) — stop it before starting another"
+            )
 
     # -- server -------------------------------------------------------------------------
     def serve(self, *, native: bool = False, show: bool = False) -> None:
@@ -235,6 +267,14 @@ class Dashboard:
         if native:  # a researcher copies output and paths out of the window
             app.native.window_args["text_select"] = True
             app.native.window_args["zoomable"] = True
+        if not _loopback(self.config.host):
+            log.warning(
+                "dashboard.exposed",
+                host=self.config.host,
+                note="the monitor (images, signals, markers, replay controls) is reachable "
+                "from the network without authentication; design, sessions and setup still "
+                "answer only this computer",
+            )
         # under pytest NiceGUI replaces the port with this variable (for its screen tests)
         os.environ.setdefault("NICEGUI_SCREEN_TEST_PORT", str(self.config.port))
         try:
@@ -287,20 +327,32 @@ class Dashboard:
         def monitor() -> None:
             _build_index(dash, ui)
 
+        # /design, /sessions and /setup read and write files, delete sessions, install
+        # packages and start sessions: with ``host`` opened to the network they still answer
+        # only this computer (the monitor stays watchable from another machine)
         @ui.page("/design")
         def design() -> None:
+            if not _local_client(ui):
+                _local_only_notice(ui, "design")
+                return
             from ariastreamlab.dashboard.designer_ui import build_design_page
 
             build_design_page(dash, ui)
 
         @ui.page("/sessions")
         def sessions() -> None:
+            if not _local_client(ui):
+                _local_only_notice(ui, "sessions")
+                return
             from ariastreamlab.dashboard.pages import build_sessions_page
 
             build_sessions_page(dash, ui)
 
         @ui.page("/setup")
         def setup() -> None:
+            if not _local_client(ui):
+                _local_only_notice(ui, "setup")
+                return
             from ariastreamlab.dashboard.setup_ui import build_setup_page
 
             build_setup_page(dash, ui)
@@ -335,8 +387,7 @@ class Dashboard:
         with self._lock:
             if self.launcher is None:
                 raise RuntimeError("no launcher registered (start with `ariastreamlab design`)")
-            if self._run is not None and self._run.running:
-                raise RuntimeError("a session started from the browser is still running")
+            self._refuse_second_session()
             cfg = load_dict(designer.to_dict(compact=False), base_dir=designer.base_dir)
             # the server is this one: never open another tab, keep the port we are on
             cfg = cfg.model_copy(
@@ -364,8 +415,7 @@ class Dashboard:
         with self._lock:
             if self.replay_launcher is None:
                 raise RuntimeError("no replay launcher registered (start with `ariastreamlab app`)")
-            if self._run is not None and self._run.running:
-                raise RuntimeError("a session started from the browser is still running")
+            self._refuse_second_session()
             exp = self.replay_launcher(Path(path), speed=speed)
             run = _BrowserRun(exp, origin="replay")
             self._run = run
@@ -485,6 +535,34 @@ class _BrowserRun:
             self.state = "failed"
             self.error = str(exc)
             log.exception("dashboard.run_failed")
+
+
+def _loopback(host: str) -> bool:
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return host == "localhost"
+
+
+def _local_client(ui: Any) -> bool:
+    """True when the page being built was requested from this computer (loopback)."""
+    try:
+        host = str(ui.context.client.ip)
+    except Exception:
+        return False
+    return _loopback(host)
+
+
+def _local_only_notice(ui: Any, page: str) -> None:
+    with nav_header(ui, page):
+        pass
+    with ui.column().classes("w-full items-center pt-16 gap-2"):
+        ui.label("Only on the computer running the experiment").classes("text-2xl font-bold")
+        ui.label(
+            "This page changes files, sessions and the installation, so it does not answer "
+            "other machines. The monitor is available from here."
+        ).classes("opacity-80")
+        ui.link("open the monitor", "/monitor")
 
 
 _SINGLETON: Dashboard | None = None

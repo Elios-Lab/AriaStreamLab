@@ -81,8 +81,11 @@ state["streams"]["rgb"]["effective_rate_hz"], state["replay"]
 ```
 
 `show: null` displays every enabled stream and every processor output. Set `host` to
-`"0.0.0.0"` to watch from another machine on the hotspot (there is no authentication — the
-page is meant for the laptop running the experiment).
+`"0.0.0.0"` to watch the monitor from another machine on the hotspot. There is no
+authentication: anyone on that network can see the images and signals and use the monitor's
+controls (markers, intervals, live parameters, replay). The pages that change files and the
+installation — *Design*, *Sessions*, *Setup* — keep answering only the laptop itself. Leave
+the default `127.0.0.1` on a shared network.
 
 ## Designing an experiment in the browser
 

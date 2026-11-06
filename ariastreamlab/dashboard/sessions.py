@@ -7,7 +7,10 @@ and, on request, the quality summary text and the events of one of them.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -162,21 +165,50 @@ def session_details(path: Path | str) -> SessionDetails:
     return out
 
 
+RECORDING_QUIET_S = 120.0
+"""A session whose manifest says ``running`` and that was written to more recently than this
+is treated as still recording (by another process) and is not deleted."""
+
+
+def _newest_write(root: Path) -> float:
+    newest = 0.0
+    for dirpath, _dirs, files in os.walk(root):
+        for name in files:
+            with contextlib.suppress(OSError):
+                newest = max(newest, os.stat(os.path.join(dirpath, name)).st_mtime)
+    return newest
+
+
 def delete_session(path: Path, *, active: Path | None = None) -> int:
     """Remove a session directory; returns the bytes freed.
 
     Refuses anything that is not a session directory (no ``manifest.json`` and no
-    ``experiment.json``), and the session that is currently recording (``active``).
+    ``experiment.json``), the session that is currently recording here (``active``), and a
+    session another process is still recording: its manifest says ``running`` and a file in
+    it changed within :data:`RECORDING_QUIET_S` (a crashed session stops changing and can be
+    deleted once that has passed).
     """
     import shutil
 
     from ariastreamlab.monitoring.health import directory_size
 
     p = Path(path).resolve()
-    if not p.is_dir() or not ((p / "manifest.json").exists() or (p / "experiment.json").exists()):
+    manifest = p / "manifest.json"
+    if not p.is_dir() or not (manifest.exists() or (p / "experiment.json").exists()):
         raise ValueError(f"{p} is not a session directory")
     if active is not None and Path(active).resolve() == p:
         raise ValueError("this session is still recording — stop it first")
+    status = None
+    with contextlib.suppress(Exception):
+        status = json.loads(manifest.read_text(encoding="utf-8")).get("status")
+    if status == "running":
+        quiet = time.time() - _newest_write(p)
+        if quiet < RECORDING_QUIET_S:
+            raise ValueError(
+                f"this session looks like it is still recording (manifest 'running', written "
+                f"{quiet:.0f} s ago) — stop it first, or wait {RECORDING_QUIET_S:.0f} s if it "
+                "crashed"
+            )
     size = directory_size(p)
     shutil.rmtree(p)
     return size

@@ -183,9 +183,10 @@ def test_dashboard_server_serves_page_and_state(tmp_path, monkeypatch) -> None:
         time.sleep(1.5)
         html = urllib.request.urlopen(exp.dashboard_url, timeout=5).read().decode()
         assert "AriaStreamLab" in html
-        for page in ("monitor", "design", "sessions"):
+        for page in ("monitor", "design", "sessions", "setup"):
             body = urllib.request.urlopen(exp.dashboard_url + page, timeout=5).read().decode()
             assert "AriaStreamLab" in body, page
+            assert "Only on the computer running the experiment" not in body, page
         state = json.loads(
             urllib.request.urlopen(exp.dashboard_url + "api/state", timeout=5).read()
         )
@@ -352,6 +353,67 @@ def test_delete_session_removes_only_session_directories(tmp_path: Path) -> None
     assert session.exists()
     freed = delete_session(session, active=tmp_path / "other")
     assert freed >= 1000 and not session.exists()
+
+
+def test_delete_session_refuses_a_session_another_process_is_recording(tmp_path: Path) -> None:
+    from ariastreamlab.dashboard.sessions import RECORDING_QUIET_S, delete_session
+
+    session = tmp_path / "20260101T000000Z_exp_P1"
+    (session / "derived").mkdir(parents=True)
+    (session / "manifest.json").write_text(json.dumps({"status": "running"}))
+    (session / "derived" / "chunk.parquet").write_bytes(b"0" * 10)
+    with pytest.raises(ValueError, match="looks like it is still recording"):
+        delete_session(session)  # not attached here, but written to a moment ago
+    assert session.exists()
+    old = time.time() - RECORDING_QUIET_S - 5  # a crashed session: "running" but quiet
+    for f in (session / "manifest.json", session / "derived" / "chunk.parquet"):
+        os.utime(f, (old, old))
+    assert delete_session(session) >= 10 and not session.exists()
+
+
+class _State:
+    def __init__(self, directory: Path) -> None:
+        self.session = {"experiment": "cli_exp", "origin": "live", "directory": str(directory)}
+
+
+def test_dashboard_knows_the_attached_session_and_refuses_a_second_one(tmp_path: Path) -> None:
+    """A session from `ariastreamlab run` or a notebook attaches to the dashboard: the app must
+    neither delete its directory nor start another session against the same glasses."""
+    from ariastreamlab.config.models import DashboardConfig
+    from ariastreamlab.dashboard.app import Dashboard
+    from ariastreamlab.dashboard.designer import Designer
+
+    dash = Dashboard(DashboardConfig(enabled=True, port=8798, open_browser=False))
+    launched: list[Any] = []
+    dash.launcher = lambda *a, **k: launched.append(1)
+    dash.replay_launcher = lambda *a, **k: launched.append(2)
+    assert dash.active_session() is None and dash.active_session_dir() is None
+    st = _State(tmp_path / "s1")
+    dash.attach(st)  # type: ignore[arg-type]
+    assert dash.active_session_dir() == tmp_path / "s1"
+    d = Designer.from_preset("rgb_imu", base_dir=tmp_path)
+    with pytest.raises(RuntimeError, match="already running in this process"):
+        dash.launch(d, mock=True, duration_s=1.0)
+    with pytest.raises(RuntimeError, match="already running in this process"):
+        dash.launch_replay(tmp_path / "s0")
+    assert launched == []
+    dash.detach(st)  # type: ignore[arg-type]
+    assert dash.active_session() is None
+
+
+class _Ctx:
+    def __init__(self, ip: str) -> None:
+        self.context = type("C", (), {"client": type("Cl", (), {"ip": ip})()})()
+
+
+@pytest.mark.parametrize(
+    ("ip", "local"),
+    [("127.0.0.1", True), ("::1", True), ("192.168.37.28", False), ("", False)],
+)
+def test_control_pages_answer_only_this_computer(ip: str, local: bool) -> None:
+    from ariastreamlab.dashboard.app import _local_client
+
+    assert _local_client(_Ctx(ip)) is local
 
 
 def test_start_does_not_spawn_a_second_server_while_serve_runs() -> None:
