@@ -232,6 +232,87 @@ def test_worker_nearest_fires_after_host_wait_without_later_sample(
     assert out.drain()[0].data["eye_gaze"] == 10_000_000
 
 
+class SlowJoiner(Joiner):
+    def process(self, inputs: Inputs) -> tuple[str, Any, dict[str, Any]]:
+        time.sleep(0.002)
+        return super().process(inputs)
+
+
+def _lossless_join_run(make_sample, seconds: int = 20) -> tuple[list[Any], Any]:
+    """A slow rgb+imu nearest-join processor fed by one time-ordered publisher, losslessly."""
+    bus = EventBus()
+    try:
+        cfg = _cfg(
+            "j",
+            "x",
+            ["rgb", "imu_left"],
+            ["joined"],
+            execution={"join": "nearest", "tolerance_ms": 5, "queue_size": 8},
+        )
+        out = bus.subscribe("derived.joined", maxsize=100_000)
+        w = ProcessorWorker(cfg, SlowJoiner(), _ctx(cfg), bus, lossless=True)
+        w.start()
+        ms = 1_000_000
+        events = [("imu_left", round(i * 1.25 * ms), i) for i in range(seconds * 800)]
+        events += [("rgb", round(i * 1000 / 30 * ms), i) for i in range(seconds * 30)]
+        events.sort(key=lambda e: e[1])
+        for sid, t, seq in events:  # like a max-speed replay: one thread, device-time order
+            bus.publish(f"raw.{sid}", make_sample(sid, device_ns=t, host_ns=t, seq=seq))
+        w.stop(timeout=60)
+        return out.drain(), w.stats()
+    finally:
+        bus.close()
+
+
+def test_lossless_multi_input_join_drops_nothing_and_is_deterministic(make_sample) -> None:
+    first, st = _lossless_join_run(make_sample)
+    assert st.queue_dropped == {}
+    assert st.join_misses == 0
+    assert st.fired == len(first) == 20 * 30
+    assert all(abs(s.metadata["imu_left"]) <= 625_000 for s in first)  # the true nearest IMU
+    second, _ = _lossless_join_run(make_sample)
+    assert [s.data for s in first] == [s.data for s in second]
+
+
+def test_lossless_join_does_not_wait_forever_for_a_raw_stream_that_ended(
+    bus: EventBus, make_sample
+) -> None:
+    cfg = _cfg(
+        "j", "x", ["rgb", "eye_gaze"], ["joined"], execution={"join": "nearest", "tolerance_ms": 5}
+    )
+    w = ProcessorWorker(cfg, Joiner(), _ctx(cfg), bus, lossless=True)
+    w.start()
+    ms = 1_000_000
+    bus.publish("raw.eye_gaze", make_sample("eye_gaze", device_ns=0, seq=0))
+    for i in range(40):  # 4 s of frames, gaze ended at t=0
+        bus.publish("raw.rgb", make_sample("rgb", device_ns=(100 + 100 * i) * ms, seq=i))
+    # frames more than the horizon behind the newest one are decided (join misses) at once
+    _wait(lambda: w.stats().join_misses >= 30)
+    assert w.stats().pending <= 11
+    w.stop()
+    assert w.stats().join_misses == 40
+
+
+@pytest.mark.parametrize("bad", [1.5, object()])
+def test_worker_survives_a_non_iterable_result(bad: object, bus: EventBus, make_sample) -> None:
+    class Wrong(Processor):
+        def process(self, inputs: Inputs) -> Any:
+            return bad if inputs.primary.sequence_number == 1 else Emit("ok", 1.0)
+
+    cfg = _cfg("w", "x", ["imu_left"], ["ok"])
+    out = bus.subscribe("derived.ok", maxsize=100)
+    w = ProcessorWorker(cfg, Wrong(), _ctx(cfg), bus, lossless=True)
+    w.start()
+    for i in range(4):
+        bus.publish("raw.imu_left", make_sample(device_ns=i, seq=i))
+    _wait(lambda: w.stats().fired == 4)
+    assert w.alive  # one bad result is an error, not the end of the worker
+    w.stop()
+    st = w.stats()
+    assert st.errors == 1 and "expected Emit" in (st.last_error or "")
+    assert len(out.drain()) == 3
+
+
 def test_worker_setup_error_propagates(bus: EventBus) -> None:
     class Bad(Processor):
         def setup(self, ctx: ProcessorContext) -> None:

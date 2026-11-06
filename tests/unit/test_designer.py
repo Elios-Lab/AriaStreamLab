@@ -208,3 +208,35 @@ def test_dashboard_launch_runs_the_designed_experiment(tmp_path: Path) -> None:
     dash.launch(d, mock=True, duration_s=0.1)
     time.sleep(0.5)
     assert made[1].mock is True and dash.run_state()["state"] == "finished"  # type: ignore[index]
+
+
+def test_stop_run_with_wait_finalises_a_browser_started_session(tmp_path: Path) -> None:
+    """Quitting the app must not leave a browser-started session's manifest at "running"."""
+    from ariastreamlab.api import Experiment
+    from ariastreamlab.storage.manifest import Manifest
+
+    dash = Dashboard(DashboardConfig(port=18998))
+
+    def launcher(config: ExperimentConfig, *, mock: bool, duration_s: float | None, prompt: Any):
+        config = config.model_copy(
+            update={"dashboard": config.dashboard.model_copy(update={"enabled": False})}
+        )
+        return Experiment(config, mock=mock, duration_s=duration_s)
+
+    dash.launcher = launcher
+    d = Designer.from_preset("rgb_imu", base_dir=tmp_path)
+    d.doc.setdefault("mock", {})["realtime"] = True
+    dash.launch(d, mock=True, duration_s=600.0)
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        state = dash.run_state()
+        if state is not None and state["session_dir"] and state["state"] == "running":
+            break
+        time.sleep(0.02)
+    time.sleep(0.3)
+    assert dash.stop_run(wait=30) is True
+    state = dash.run_state()
+    assert state is not None and not state["running"] and state["state"] == "finished"
+    manifest = Manifest.load(Path(state["session_dir"]) / "manifest.json")
+    assert manifest.status == "completed"
+    assert dash.stop_run(wait=1) is False  # nothing left to stop

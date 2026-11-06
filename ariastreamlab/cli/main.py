@@ -11,7 +11,7 @@ import json
 import sys
 import time
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 from rich.console import Console
@@ -70,9 +70,18 @@ def _main(
         _run_app(None, None, browser=False)
 
 
+def _finish_browser_run(dash: Any) -> None:
+    """On quit: stop a session started from the browser and wait until it is finalised."""
+    state = dash.run_state()
+    if state is not None and state["running"]:
+        console.print("finishing the running session… (Ctrl-C again to abandon it)")
+        dash.stop_run(wait=dash.RUN_FINALIZE_TIMEOUT_S)
+
+
 def _run_app(path: Path | None, port: int | None, *, browser: bool) -> None:
     from ariastreamlab.api import serve_app
 
+    dash: Any = None
     try:
         if browser:
             dash = serve_app(path, port=port, native=False)
@@ -85,6 +94,8 @@ def _run_app(path: Path | None, port: int | None, *, browser: bool) -> None:
     except AriaStreamLabError as exc:
         _fail(exc)
     except KeyboardInterrupt:
+        if dash is not None:
+            _finish_browser_run(dash)
         console.print("bye")
 
 
@@ -423,7 +434,7 @@ def design(
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
-        dash.stop_run()
+        _finish_browser_run(dash)
         console.print("bye")
 
 

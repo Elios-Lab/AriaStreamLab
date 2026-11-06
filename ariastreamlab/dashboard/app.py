@@ -391,12 +391,28 @@ class Dashboard:
             "session_dir": None if run.exp.session_dir is None else str(run.exp.session_dir),
         }
 
-    def stop_run(self) -> None:
-        """Ask the browser-started session to stop (no-op otherwise)."""
+    RUN_FINALIZE_TIMEOUT_S = 90.0
+    """How long quitting the app waits for a browser-started session to finalise (a live
+    stop — reconnect, quiescence, VRS flush — can take well over 30 s)."""
+
+    def stop_run(self, *, wait: float | None = None) -> bool:
+        """Ask the browser-started session to stop; ``True`` when one was running.
+
+        With ``wait`` (seconds) also block until it has closed — the session thread is a
+        daemon, so a process that exits without waiting leaves the session unfinalised
+        (manifest still ``running``).
+        """
         run = self._run
-        if run is not None and run.running:
-            run.exp.stop()
-            self.answer_prompt()  # a session waiting at the hotspot prompt must not hang
+        if run is None or not run.running:
+            return False
+        run.exp.stop()
+        self.answer_prompt()  # a session waiting at the hotspot prompt must not hang
+        if wait is not None:
+            log.info("dashboard.run_finishing", timeout_s=wait)
+            run.join(wait)
+            if run.running:
+                log.warning("dashboard.run_not_finalised", timeout_s=wait)
+        return True
 
     def _ask(self, message: str) -> None:
         """``Experiment.prompt`` for browser-started sessions: a dialog, answered by a click."""
@@ -455,6 +471,9 @@ class _BrowserRun:
 
     def start(self) -> None:
         self._thread.start()
+
+    def join(self, timeout: float | None = None) -> None:
+        self._thread.join(timeout)
 
     def _main(self) -> None:
         try:

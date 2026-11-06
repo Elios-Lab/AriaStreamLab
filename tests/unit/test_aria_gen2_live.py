@@ -355,10 +355,25 @@ def test_live_source_direct_with_bus(fake_sdk: FakeSdk, tmp_path: Path) -> None:
     bus.close()
 
 
+@pytest.mark.parametrize("hostile", [False, True])
 def test_stall_is_detected_and_ends_the_session(
-    fake_sdk: FakeSdk, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    hostile: bool, fake_sdk: FakeSdk, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The glasses stop streaming (thermal mitigation, run 15): a warning event, then a stop."""
+    """The glasses stop streaming (thermal mitigation, run 15): a warning event, then a stop.
+
+    ``hostile``: the device reports thermal mitigation without a temperature and the quality
+    query fails unexpectedly — the monitor must survive both and still detect the stall.
+    """
+    if hostile:
+        from tests.unit.test_aria_gen2_control import FakeStatus
+
+        monkeypatch.setattr(FakeStatus, "thermal_mitigation_triggered", True)
+        monkeypatch.setattr(FakeStatus, "skin_temp_celsius", None)
+
+        def broken_quality(self: Any) -> Any:
+            raise RuntimeError("unexpected payload")
+
+        monkeypatch.setattr(device_mod.AriaGen2DeviceManager, "quality", broken_quality)
     cfg = _config(
         tmp_path,
         device={
@@ -419,3 +434,5 @@ def test_stall_is_detected_and_ends_the_session(
     assert len(stalls) == 1 and stalls[0].payload["samples"] == 810
     m = Manifest.load(root / "manifest.json")  # type: ignore[operator]
     assert m.status == "completed" and any("stalled" in w for w in m.warnings)
+    if hostile:
+        assert any(w.startswith("thermal mitigation triggered (") for w in m.warnings)

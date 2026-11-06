@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import sys
 import threading
 from collections import Counter, deque
 from collections.abc import Mapping, Sequence
@@ -88,6 +89,11 @@ class ProcessorWorker:
     SECONDARY_QUEUE = 4096
     LOSSLESS_QUEUE = 256
     SECONDARY_BUFFER = 8192
+    LOSSLESS_HORIZON_NS = 1_000_000_000
+    """Lossless joins: how far (device time) the primary may run ahead of a raw secondary
+    stream that has nothing at its timestamp before the primary fires without it (a gap or a
+    stream that ended). Lossless sources publish in device-time order from one thread, so the
+    decision depends on the data only."""
     EXEC_WINDOW = 512
     LOG_EVERY = 100
 
@@ -121,9 +127,16 @@ class ProcessorWorker:
         self._primary_sub: Subscription[Any] | None = None
         self._secondary_subs: dict[str, Subscription[Any]] = {}
         self._calib_sub: Subscription[Any] | None = None
+        # lossless: buffers are trimmed by time (behind the primary) instead of by capacity,
+        # so a primary backlog never evicts the secondary samples it still needs
         self._buffers: dict[str, TimeSeriesBuffer[AnySample]] = {
-            s: TimeSeriesBuffer(self.SECONDARY_BUFFER) for s in self.secondaries
+            s: TimeSeriesBuffer(sys.maxsize if lossless else self.SECONDARY_BUFFER)
+            for s in self.secondaries
         }
+        # raw device streams come from the source's single publisher; derived ones from other
+        # workers, which may lag arbitrarily, so a lossless join waits for those without limit
+        self._raw_secondaries = frozenset(s for s in self.secondaries if s in ctx.registry)
+        self._newest_primary_ns: int | None = None
         self._pending: deque[tuple[AnySample, int]] = deque()
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -160,7 +173,7 @@ class ProcessorWorker:
             self._secondary_subs[s] = self.bus.subscribe(
                 f"*.{s}",
                 maxsize=self.SECONDARY_QUEUE,
-                policy=DropPolicy.DROP_OLDEST,
+                policy=DropPolicy.BLOCK if self.lossless else DropPolicy.DROP_OLDEST,
                 name=f"proc:{self.id}:{s}",
             )
         self._calib_sub = self.bus.subscribe(
@@ -212,18 +225,25 @@ class ProcessorWorker:
         try:
             while True:
                 item = self._primary_sub.get(timeout=0.05)
-                self._poll_calibration()
-                self._drain_secondaries()
-                if item is not None:
-                    self._accept(item)
-                    for extra in self._primary_sub.drain():
-                        self._accept(extra)
-                self._service_pending(final=False)
+                try:
+                    self._poll_calibration()
+                    self._drain_secondaries()
+                    if item is not None:
+                        self._accept(item)
+                        for extra in self._primary_sub.drain():
+                            self._accept(extra)
+                    self._service_pending(final=False)
+                except Exception as exc:
+                    # a dead worker would stall a lossless publisher for good: count, go on
+                    self._record_error(exc, "worker")
                 if self._stop.is_set() and item is None and len(self._primary_sub) == 0:
                     break
             # drain: whatever is still pending fires with what we have
             self._drain_secondaries()
             self._service_pending(final=True)
+        except BaseException:
+            self._state = "failed"
+            raise
         finally:
             try:
                 self.processor.shutdown()
@@ -256,6 +276,9 @@ class ProcessorWorker:
 
     def _accept(self, item: AnySample) -> None:
         self._received[self.primary] += 1
+        ts = item.device_timestamp_ns
+        if self._newest_primary_ns is None or ts > self._newest_primary_ns:
+            self._newest_primary_ns = ts
         if not self.secondaries or self._join == "latest":
             self._fire(item)
             return
@@ -263,25 +286,48 @@ class ProcessorWorker:
         # reached the primary's timestamp (or a bounded host time passes), so the result
         # depends on the data, not on which thread delivered first
         self._pending.append((item, self.clock.now_ns()))
-        limit = max(self.queue_size, self.LOSSLESS_QUEUE if self.lossless else 1)
-        while len(self._pending) > limit:
+        if self.lossless:
+            return  # bounded by the publisher's back-pressure, never trimmed
+        while len(self._pending) > self.queue_size:
             self._pending.popleft()
             self._pending_dropped += 1
 
     def _service_pending(self, *, final: bool) -> None:
         if not self._pending:
             return
+        if self.lossless:
+            # everything the source published before the newest accepted primary is already
+            # in the secondary queues (one publisher, BLOCK queues): take it before deciding
+            self._drain_secondaries()
         now = self.clock.now_ns()
         wait_ns = self._tolerance_ns + 20_000_000
         while self._pending:
             item, arrived = self._pending[0]
             ts = item.device_timestamp_ns
-            complete = all(_last_at_least(b, ts) for b in self._buffers.values())
-            if complete or final or now - arrived >= wait_ns:
-                self._pending.popleft()
-                self._fire(item)
+            if self.lossless:
+                ready = final or self._lossless_ready(ts)
             else:
+                complete = all(_last_at_least(b, ts) for b in self._buffers.values())
+                ready = complete or final or now - arrived >= wait_ns
+            if not ready:
                 break
+            self._pending.popleft()
+            self._fire(item)
+            if self.lossless:
+                # nothing older than this can match a later primary (joins are within the
+                # tolerance); the horizon is slack for slightly out-of-order primaries
+                floor = ts - self._tolerance_ns - self.LOSSLESS_HORIZON_NS
+                for buf in self._buffers.values():
+                    buf.discard_before(floor)
+
+    def _lossless_ready(self, ts: int) -> bool:
+        """Whether every secondary has reached ``ts`` or — raw streams only — never will."""
+        newest = self._newest_primary_ns
+        gave_up = newest is not None and newest - ts >= self.LOSSLESS_HORIZON_NS
+        return all(
+            _last_at_least(buf, ts) or (gave_up and sid in self._raw_secondaries)
+            for sid, buf in self._buffers.items()
+        )
 
     # -- firing -------------------------------------------------------------------------
     def _fire(self, primary: AnySample) -> None:
@@ -316,12 +362,28 @@ class ProcessorWorker:
             isinstance(result, tuple) and result and isinstance(result[0], str)
         ):
             outs = [result]
+        elif isinstance(result, (list, tuple)):
+            outs = result
         else:
-            outs = list(result)  # type: ignore[arg-type]
+            try:
+                outs = list(result)
+            except TypeError:
+                self._record_error(
+                    TypeError(
+                        f"process() returned {type(result).__name__}, expected Emit/tuple"
+                        " (or a list of them)"
+                    ),
+                    "output",
+                )
+                return
         source_streams = (self.primary, *self.secondaries)
         source_ts = tuple(items[s].device_timestamp_ns for s in source_streams if s in items)
         for out in outs:
-            ds = self._to_derived(out, primary, source_streams, source_ts, start, end)
+            try:
+                ds = self._to_derived(out, primary, source_streams, source_ts, start, end)
+            except Exception as exc:  # e.g. metadata that is not a mapping
+                self._record_error(exc, "output")
+                continue
             if ds is None:
                 continue
             self.bus.publish(f"derived.{ds.stream_id}", ds)

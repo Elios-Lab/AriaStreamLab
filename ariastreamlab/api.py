@@ -1035,7 +1035,8 @@ def serve_app(
         try:
             dash.serve(native=True)  # blocks until the window is closed
         finally:
-            dash.stop_run()
+            # the session thread is a daemon: finalise it before the process exits
+            dash.stop_run(wait=dash.RUN_FINALIZE_TIMEOUT_S)
         return dash
     if not dash.start():
         raise AriaStreamLabError(

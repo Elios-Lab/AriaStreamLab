@@ -56,13 +56,15 @@ def _short_session(name: str, annotate: str, payloads: list[dict[str, object]]) 
         base = None
         while base is None:  # wait for data so that intervals get device time
             s = exp.stream_stats().get("imu_left")
-            base = s.last_device_ns if s is not None and s.received else None
+            # the first timestamp, not the last: the session may already be over by now
+            base = s.first_device_ns if s is not None and s.received else None
             time.sleep(0.05)
         for i, payload in enumerate(payloads):
             t0 = base + int((0.2 + 0.6 * i) * 1e9)
             tid = exp.begin(annotate, payload, at_ns=t0)
             exp.end(tid, at_ns=t0 + int(0.5e9))
-        assert exp.running
+        # no `assert exp.running` here: a non-realtime mock produces its 3 s of data in a
+        # fraction of a second, so on a fast machine the session has already ended
         assert exp.wait(timeout=60)
         assert not exp.running
     root = exp.session_dir

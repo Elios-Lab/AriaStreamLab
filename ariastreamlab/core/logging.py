@@ -9,19 +9,23 @@ from typing import Any
 import structlog
 
 _configured = False
+_console: logging.Handler | None = None
 
 
-def configure_logging(
-    level: str = "INFO", *, json_lines: bool = False, force: bool = False
-) -> None:
-    """Configure structlog + stdlib logging once.
+def configure_logging(level: str = "INFO", *, json_lines: bool = False, force: bool = True) -> None:
+    """Configure structlog + stdlib logging (level and console format).
+
+    An explicit call always applies — it replaces the defaults :func:`get_logger` installs
+    lazily (at import time, in practice), which is how an experiment's ``logging`` section
+    takes effect. Reconfiguring swaps only the console handler installed here, so other
+    handlers on the root logger (a session's ``logs/session.log``) are kept.
 
     Args:
         level: ``DEBUG`` … ``ERROR``.
-        json_lines: Emit one JSON object per line (for ``logs/session.log`` and CI).
-        force: Reconfigure even if already configured.
+        json_lines: Emit one JSON object per line on the console (for CI and log shippers).
+        force: ``False`` makes the call a no-op once logging has been configured.
     """
-    global _configured
+    global _configured, _console
     if _configured and not force:
         return
     timestamper = structlog.processors.TimeStamper(fmt="iso", utc=True)
@@ -51,7 +55,13 @@ def configure_logging(
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(formatter)
     root = logging.getLogger()
-    root.handlers[:] = [handler]
+    if _console is not None and _console in root.handlers:
+        root.handlers[root.handlers.index(_console)] = handler
+    elif not _configured:
+        root.handlers[:] = [handler]
+    else:
+        root.addHandler(handler)
+    _console = handler
     root.setLevel(getattr(logging, level.upper(), logging.INFO))
     _configured = True
 
@@ -59,5 +69,5 @@ def configure_logging(
 def get_logger(name: str) -> structlog.stdlib.BoundLogger:
     """A bound logger for ``name`` (configures defaults lazily)."""
     if not _configured:
-        configure_logging()
+        configure_logging(force=False)
     return structlog.get_logger(name)  # type: ignore[no-any-return]

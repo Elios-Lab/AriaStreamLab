@@ -84,6 +84,17 @@ class TimeSeriesBuffer(Generic[T]):
         for it in items:
             self.push(it)
 
+    def discard_before(self, ts_ns: int, *, keep: int = 1) -> int:
+        """Drop items older than ``ts_ns`` but keep the ``keep`` newest of them.
+
+        For buffers trimmed by time instead of capacity; returns how many were dropped.
+        """
+        n = max(0, bisect.bisect_left(self._ts, ts_ns) - keep)
+        if n:
+            del self._ts[:n]
+            del self._items[:n]
+        return n
+
     @property
     def first_ns(self) -> int | None:
         """Oldest timestamp held."""

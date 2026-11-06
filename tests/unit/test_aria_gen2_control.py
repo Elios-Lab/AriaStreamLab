@@ -164,6 +164,8 @@ def test_quality_parser_is_defensive() -> None:
     assert parse_quality_stats('{"data": {}}').parse_error == "no sensor_health_stats_list"
     assert parse_quality_stats(QUALITY_JSON).sensors  # dict input works too
     assert parse_quality_stats(b'{"data": {"sensor_health_stats_list": []}}').sensors == ()
+    odd = {"data": {"sensor_health_stats_list": [{"sensor_type": "MAG", "score": "n/a"}]}}
+    assert parse_quality_stats(odd).sensors[0].score is None  # never raises
 
 
 # --------------------------------------------------------------------------- plan

@@ -114,6 +114,7 @@ class AriaGen2Source(Source):
         self.data_path: str = "none"
         self.stream_source_ip: str | None = None
         self.warnings: list[str] = []
+        self._monitor_errors: dict[str, int] = {}
         """Problems met during the session (stall, no data, thermal…); into the manifest."""
         self.notes: list[str] = list(self.plan.warnings)
         """Facts worth recording that are not problems (plan rates, control hand-over)."""
@@ -399,80 +400,96 @@ class AriaGen2Source(Source):
         while not self._stop.wait(1.0):
             now = time.monotonic()
             conns = self._connections()
-            total = sum(self._binder.received.values()) if self._binder else 0
-            if conns:
-                ip = conns[0].get("client_ip")
-                if ip and ip != self.stream_source_ip:
-                    self.stream_source_ip = str(ip)
-                    self.data_path = "usb" if self._is_usb_ip(str(ip)) else "wifi"
-                    log.info("live.device_connected", client_ip=ip, data_path=self.data_path)
-                    if self.data_path == "usb" and self.plan.interface != "usb":
-                        msg = (
-                            f"the device pushes data over the USB link ({ip}) although the "
-                            f"plan asked for {self.plan.interface}: the laptop is probably "
-                            "not on the hotspot; keep the cable in for this session"
-                        )
-                        self._warn("data_over_usb", msg)
-                # Control hand-over to Wi-Fi. DeviceClient.connect() holds the interpreter
-                # lock for its whole duration (21 s in run 13) and every SDK callback stalls
-                # meanwhile, so it is done only when needed: when the USB link disappears
-                # (``on_unplug``, default), immediately (``early``), or never.
-                mode = self.config.device.connection.wifi_control
-                if (
-                    not wifi_control_tried
-                    and mode != "never"
-                    and self.data_path == "wifi"
-                    and mgr.transport != "wifi"
-                    and self.stream_source_ip
-                ):
-                    usb_present = self._usb_link_present() if mode == "on_unplug" else True
-                    if mode == "early" or not usb_present:
-                        wifi_control_tried = True
-                        if not usb_present:
-                            log.warning(
-                                "live.usb_unplugged",
-                                note="USB link gone; moving control to Wi-Fi "
-                                "(data may pause while the connection is made)",
+            try:
+                total = sum(list(self._binder.received.values())) if self._binder else 0
+            except Exception:  # never let the counters take the stall detection down
+                total = self._stall_total
+            try:
+                if conns:
+                    ip = conns[0].get("client_ip")
+                    if ip and ip != self.stream_source_ip:
+                        self.stream_source_ip = str(ip)
+                        self.data_path = "usb" if self._is_usb_ip(str(ip)) else "wifi"
+                        log.info("live.device_connected", client_ip=ip, data_path=self.data_path)
+                        if self.data_path == "usb" and self.plan.interface != "usb":
+                            msg = (
+                                f"the device pushes data over the USB link ({ip}) although the "
+                                f"plan asked for {self.plan.interface}: the laptop is probably "
+                                "not on the hotspot; keep the cable in for this session"
                             )
-                        if mgr.reconnect_over_ip(self.stream_source_ip):
-                            self.notes.append(
-                                f"control moved to Wi-Fi ({self.stream_source_ip})"
-                                + ("" if not usb_present else "; the USB cable can be unplugged")
-                            )
-            if total and self.first_sample_host_ns is None and self._binder is not None:
-                self.first_sample_host_ns = self._binder.first_host_ns or self.clock.now_ns()
-            if not total and not no_data_warned and now - t_start > self.no_data_timeout_s:
-                no_data_warned = True
-                msg = (
-                    f"no data received {self.no_data_timeout_s:g} s after start_streaming "
-                    f"(server connections: {len(conns)})"
-                )
-                self._warn("no_data", msg)
-                log.warning(
-                    "live.no_data",
-                    note=msg,
-                    hint="is the laptop on the hotspot / same network? firewall on port "
-                    f"{self.plan.server_port}? does the device resolve oatmeal_server.local? "
-                    f"streaming cert told to the device: {mgr.cert_name} (a mismatch with "
-                    "~/.aria/streaming-certs/persistent fails the TLS handshake silently; "
-                    "run `aria_gen2 streaming install-certs`)",
-                )
-            self._check_stall(total, now)
-            if conns:  # only while the device is connected (see stop())
-                self._last_ticsync = self._ticsync()
-            self.link = {
-                "connections": len(conns),
-                "data_path": self.data_path,
-                "stream_source_ip": self.stream_source_ip,
-                "control_transport": mgr.transport,
-                "samples": total,
-                "ticsync": dict(self._last_ticsync),
-                "sdk_queues": self._queue_sizes(),
-                "stalled_s": None
-                if self.stalled_since_ns is None
-                else round((self.clock.now_ns() - self.stalled_since_ns) / 1e9, 1),
-            }
-            bus.publish("health.link", dict(self.link))
+                            self._warn("data_over_usb", msg)
+                    # Control hand-over to Wi-Fi. DeviceClient.connect() holds the interpreter
+                    # lock for its whole duration (21 s in run 13) and every SDK callback stalls
+                    # meanwhile, so it is done only when needed: when the USB link disappears
+                    # (``on_unplug``, default), immediately (``early``), or never.
+                    mode = self.config.device.connection.wifi_control
+                    if (
+                        not wifi_control_tried
+                        and mode != "never"
+                        and self.data_path == "wifi"
+                        and mgr.transport != "wifi"
+                        and self.stream_source_ip
+                    ):
+                        usb_present = self._usb_link_present() if mode == "on_unplug" else True
+                        if mode == "early" or not usb_present:
+                            wifi_control_tried = True
+                            if not usb_present:
+                                log.warning(
+                                    "live.usb_unplugged",
+                                    note="USB link gone; moving control to Wi-Fi "
+                                    "(data may pause while the connection is made)",
+                                )
+                            if mgr.reconnect_over_ip(self.stream_source_ip):
+                                unplug = (
+                                    "" if not usb_present else "; the USB cable can be unplugged"
+                                )
+                                self.notes.append(
+                                    f"control moved to Wi-Fi ({self.stream_source_ip}){unplug}"
+                                )
+            except Exception:
+                self._monitor_error("link")
+            # The stall check is what ends a session the glasses stopped (thermal shutdown,
+            # hardware run 15): every other part of the loop may fail, this one must still run.
+            try:
+                self._check_stall(total, now)
+            except Exception:
+                self._monitor_error("stall")
+            try:
+                if total and self.first_sample_host_ns is None and self._binder is not None:
+                    self.first_sample_host_ns = self._binder.first_host_ns or self.clock.now_ns()
+                if not total and not no_data_warned and now - t_start > self.no_data_timeout_s:
+                    no_data_warned = True
+                    msg = (
+                        f"no data received {self.no_data_timeout_s:g} s after start_streaming "
+                        f"(server connections: {len(conns)})"
+                    )
+                    self._warn("no_data", msg)
+                    log.warning(
+                        "live.no_data",
+                        note=msg,
+                        hint="is the laptop on the hotspot / same network? firewall on port "
+                        f"{self.plan.server_port}? does the device resolve oatmeal_server.local? "
+                        f"streaming cert told to the device: {mgr.cert_name} (a mismatch with "
+                        "~/.aria/streaming-certs/persistent fails the TLS handshake silently; "
+                        "run `aria_gen2 streaming install-certs`)",
+                    )
+                if conns:  # only while the device is connected (see stop())
+                    self._last_ticsync = self._ticsync()
+                self.link = {
+                    "connections": len(conns),
+                    "data_path": self.data_path,
+                    "stream_source_ip": self.stream_source_ip,
+                    "control_transport": mgr.transport,
+                    "samples": total,
+                    "ticsync": dict(self._last_ticsync),
+                    "sdk_queues": self._queue_sizes(),
+                    "stalled_s": None
+                    if self.stalled_since_ns is None
+                    else round((self.clock.now_ns() - self.stalled_since_ns) / 1e9, 1),
+                }
+                bus.publish("health.link", dict(self.link))
+            except Exception:
+                self._monitor_error("link_state")
             if now >= next_health:
                 next_health = now + self.health_interval_s
                 try:
@@ -480,21 +497,34 @@ class AriaGen2Source(Source):
                     bus.publish("health.device", health)
                     if health.thermal_mitigation and not thermal_active:
                         thermal_active = True
+                        temp = health.skin_temperature_c
+                        at = "" if temp is None else f" at {temp:.1f} °C skin temperature"
                         self._warn(
                             "thermal_mitigation",
-                            f"thermal mitigation triggered at {health.skin_temperature_c:.1f} °C"
-                            " skin temperature (the glasses stop streaming when it happens)",
-                            skin_temperature_c=health.skin_temperature_c,
+                            f"thermal mitigation triggered{at}"
+                            " (the glasses stop streaming when it happens)",
+                            skin_temperature_c=temp,
                         )
                     elif not health.thermal_mitigation:
                         thermal_active = False
                 except DeviceError as exc:
                     log.warning("device.status_failed", error=str(exc))
+                except Exception:
+                    self._monitor_error("status")
             if now >= next_quality:
                 next_quality = now + self.quality_interval_s
-                q = mgr.quality()
-                if q is not None:
-                    bus.publish("health.quality", q)
+                try:
+                    q = mgr.quality()
+                    if q is not None:
+                        bus.publish("health.quality", q)
+                except Exception:
+                    self._monitor_error("quality")
+
+    def _monitor_error(self, part: str) -> None:
+        """An unexpected error in one part of the monitor: log it (rate-limited), keep going."""
+        n = self._monitor_errors[part] = self._monitor_errors.get(part, 0) + 1
+        if n == 1 or n % 60 == 0:
+            log.exception("live.monitor_error", part=part, count=n)
 
     def _warn(self, name: str, message: str, **payload: Any) -> None:
         """Record a problem: the manifest's warnings, the log and (via the hook) an event."""

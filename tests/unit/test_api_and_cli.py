@@ -252,3 +252,30 @@ def test_clock_anchor_events_are_added_periodically(monkeypatch: pytest.MonkeyPa
     assert 2 <= len(anchors) <= 4
     assert anchors[0].payload["utc_ns"] > 0 and anchors[0].payload["device_offset_ns"] is not None
     assert anchors[0].timestamp_source == "estimated"
+
+
+def test_experiment_applies_its_logging_section() -> None:
+    import logging
+
+    import structlog
+
+    from ariastreamlab.core.logging import configure_logging
+
+    sentinel = logging.NullHandler()  # e.g. a session's logs/session.log handler
+    logging.getLogger().addHandler(sentinel)
+    try:
+        data = {**_fast_config(), "logging": {"level": "DEBUG", "format": "json"}}
+        Experiment(load_dict(data), mock=True)
+        root = logging.getLogger()
+        assert root.level == logging.DEBUG
+        assert sentinel in root.handlers  # reconfiguring keeps handlers it did not install
+        renderers = [
+            getattr(h.formatter, "processors", [None])[-1]
+            for h in root.handlers
+            if isinstance(h.formatter, structlog.stdlib.ProcessorFormatter)
+        ]
+        assert len(renderers) == 1
+        assert isinstance(renderers[0], structlog.processors.JSONRenderer)
+    finally:
+        logging.getLogger().removeHandler(sentinel)
+        configure_logging()  # back to the defaults for the other tests

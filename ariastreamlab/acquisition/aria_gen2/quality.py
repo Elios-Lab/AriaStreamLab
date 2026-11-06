@@ -125,6 +125,14 @@ def _int(d: dict[str, Any], key: str) -> int | None:
         return None
 
 
+def _float(d: dict[str, Any], key: str) -> float | None:
+    v = d.get(key)
+    try:
+        return None if v is None else float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def parse_quality_stats(payload: str | bytes | dict[str, Any] | None) -> QualityStats:
     """Parse the JSON text the device returns; never raises."""
     if payload is None:
@@ -153,7 +161,6 @@ def parse_quality_stats(payload: str | bytes | dict[str, Any] | None) -> Quality
         if not isinstance(item, dict):
             continue
         st = str(item.get("sensor_type", "?"))
-        score = item.get("score")
         sensors.append(
             SensorQuality(
                 sensor_type=st,
@@ -164,7 +171,7 @@ def parse_quality_stats(payload: str | bytes | dict[str, Any] | None) -> Quality
                 time_errors_early=_int(item, "early_time_error_count"),
                 time_errors_late=_int(item, "late_time_error_count"),
                 time_errors_total=_int(item, "total_time_error_count"),
-                score=None if score is None else float(score),
+                score=_float(item, "score"),
                 streams=SENSOR_TO_STREAMS.get(st, ()),
                 raw=dict(item),
             )

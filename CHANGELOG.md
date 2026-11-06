@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+- Lossless processing (max-speed replay, non-realtime mock) is now lossless and
+  reproducible for processors with several inputs: secondary inputs use back-pressure
+  instead of dropping their oldest samples, time-based joins wait for the data (not for a
+  host-time timeout) and are never trimmed, and the join buffers are trimmed by time behind
+  the primary. A raw secondary stream with nothing at a frame's time (a gap, or a stream
+  that ended) stops holding the frame once the primary is 1 s of device time ahead.
+- A processor returning something that is not an `Emit`/tuple or a list of them (a bare
+  payload, a float) is counted as an error instead of silently ending its worker — which
+  also hung a lossless replay for good; any unexpected error in a worker's loop is counted
+  and the worker carries on.
+- Quitting the app (closing the window, Ctrl-C in `ariastreamlab app --browser` or
+  `ariastreamlab design`) waits for a session started from the browser to finalise; before,
+  the process exited first and left its manifest at `status: running`.
+- The experiment's `logging` section (`level`, `format`) is applied; it was ignored because
+  the import-time defaults were never replaced. Reconfiguring keeps the session's
+  `logs/session.log` handler.
+- Live sessions: the device monitor survives unexpected errors (thermal mitigation reported
+  without a temperature, an unparseable quality score, …) — before, one such error ended the
+  thread and with it the stall detection that stops a session the glasses have stopped.
+  The quality-stats parser no longer raises on a non-numeric `score`.
+- Tests: the example-project tests no longer assume a non-realtime mock session is still
+  running 0.3 s after it starts.
+
 ## 0.2.3 — 2026-10-29
 
 - A session started from the application window tried to start a second dashboard server
