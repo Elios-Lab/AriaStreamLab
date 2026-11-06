@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.4 — 2026-11-06
 
 - Lossless processing (max-speed replay, non-realtime mock) is now lossless and
   reproducible for processors with several inputs: secondary inputs use back-pressure
