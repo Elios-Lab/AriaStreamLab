@@ -1,11 +1,13 @@
 name: Release
 
-# Pushing a tag `vX.Y.Z` builds the sdist and wheel and publishes a GitHub release whose
-# notes are that version's section of CHANGELOG.md:
+# Pushing a tag `vX.Y.Z` runs the whole CI suite on that tag and, only when it passes, builds
+# the sdist and wheel and publishes a GitHub release whose notes are that version's section
+# of CHANGELOG.md:
 #
 #   git tag -a v0.2.0 -m "AriaStreamLab 0.2.0" && git push origin v0.2.0
 #
-# The tag must match `version` in pyproject.toml; the job refuses otherwise.
+# The tag must look like vX.Y.Z and match `version` in pyproject.toml; the job refuses
+# otherwise.
 
 on:
   push:
@@ -16,35 +18,49 @@ on:
         description: "An existing tag to (re)publish, e.g. v0.2.0"
         required: true
 
+# read-only by default; only the publishing job may write (and only release assets)
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  ci:
+    name: CI on the tag
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ inputs.tag || github.ref }}
+
   release:
+    needs: ci
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      # user input reaches the shell only through the environment, never as `${{ }}` text
+      # pasted into a script (that would let a crafted tag name run commands)
+      TAG: ${{ inputs.tag || github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ inputs.tag || github.ref }}
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
 
-      - name: Resolve the tag and check it against pyproject.toml
-        id: meta
+      - name: Check the tag and match it against pyproject.toml
         run: |
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "tag '$TAG' is not of the form vX.Y.Z" >&2; exit 1
+          fi
           VERSION="${TAG#v}"
           PYPROJECT=$(python3 scripts/release_notes.py --version)
           if [ "$VERSION" != "$PYPROJECT" ]; then
             echo "tag $TAG does not match pyproject version $PYPROJECT" >&2; exit 1
           fi
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
       - name: Release notes from CHANGELOG.md
         run: |
-          python3 scripts/release_notes.py "${{ steps.meta.outputs.version }}" > notes.md
+          python3 scripts/release_notes.py "$VERSION" > notes.md
           cat notes.md
 
       - name: Build sdist and wheel
@@ -54,11 +70,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="${{ steps.meta.outputs.tag }}"
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" --title "AriaStreamLab ${{ steps.meta.outputs.version }}" --notes-file notes.md
+            gh release edit "$TAG" --title "AriaStreamLab $VERSION" --notes-file notes.md
             gh release upload "$TAG" dist/* --clobber
           else
-            gh release create "$TAG" --title "AriaStreamLab ${{ steps.meta.outputs.version }}" \
+            gh release create "$TAG" --title "AriaStreamLab $VERSION" \
               --notes-file notes.md dist/*
           fi

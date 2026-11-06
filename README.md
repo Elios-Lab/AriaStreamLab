@@ -352,8 +352,8 @@ Every change that reaches `main` is a new patch version, so that the version a s
 manifest records identifies the code that produced it: describe the change under
 `## Unreleased` in `CHANGELOG.md`, then `python scripts/release.py patch` bumps
 `pyproject.toml`, dates the section, commits and tags; `git push origin main vX.Y.Z` makes
-the release workflow build the sdist and wheel and publish the GitHub release with that
-section as its notes. Reinstall afterwards (`pip install -e .`) so that
+the release workflow run the whole CI suite on the tag and, only when it passes, build the
+sdist and wheel and publish the GitHub release with that section as its notes. Reinstall afterwards (`pip install -e .`) so that
 `ariastreamlab --version` reports the new number. Behaviour that only the glasses can confirm is listed in
 [docs/validation_checklist.md](docs/validation_checklist.md).
 

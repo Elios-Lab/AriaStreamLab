@@ -14,8 +14,9 @@ What it does, in order:
    (it must exist and must not be empty — write the notes first).
 4. Commits "X.Y.Z" and creates the annotated tag vX.Y.Z.
 
-Then `git push origin main vX.Y.Z` publishes it: the release workflow builds the wheel and
-creates the GitHub release from that changelog section. After the bump, reinstall the
+Then `git push origin main vX.Y.Z` publishes it: the release workflow runs the CI suite on
+the tag and, when it passes, builds the wheel and creates the GitHub release from that
+changelog section. After the bump, reinstall the
 package in your environment (`pip install -e .`) so that `ariastreamlab --version` — and
 every session manifest — reports the new number: an editable install records the version
 at install time.

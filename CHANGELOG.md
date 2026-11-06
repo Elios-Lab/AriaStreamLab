@@ -56,6 +56,11 @@
   to mark it `crashed`.
 - An `Experiment` is one session: `open()`/`run()` after `close()` raise instead of writing
   an empty "completed" session that carried the first one's statistics.
+- Release workflow: a tag is published only after the whole CI suite (lint, types, import
+  contracts, tests on Ubuntu and macOS, wheel build) passes on that tag; the tag must be
+  `vX.Y.Z` and reaches the shell through an environment variable (a crafted tag name given
+  to the manual re-publish could run commands); the workflow token is read-only except for
+  the publishing job, and every third-party action is pinned to a commit.
 
 ## 0.2.3 — 2026-10-29
 
