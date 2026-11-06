@@ -118,7 +118,10 @@ class Experiment:
         self._subscriptions: list[tuple[Subscription[Any], threading.Thread]] = []
         self._stop = threading.Event()
         self._opened = False
+        self._closed = False  # one Experiment = one session; it cannot be reopened
         self._failed: BaseException | None = None
+        self._interrupted = False  # Ctrl-C: the session ends normally ("completed")
+        self._run_error: BaseException | None = None  # what ended a start()ed session
         self._run_thread: threading.Thread | None = None
         self._log = get_logger("ariastreamlab.experiment")
         configure_logging(config.logging.level, json_lines=config.logging.format == "json")
@@ -228,9 +231,30 @@ class Experiment:
 
     # -- lifecycle --------------------------------------------------------------------
     def open(self) -> Experiment:
-        """Create the session and the source without starting acquisition."""
+        """Create the session and the source without starting acquisition.
+
+        If anything fails half-way, what was already started is stopped and a session
+        directory that was already created is finalised as ``crashed`` before the error
+        propagates.
+        """
         if self._opened:
             return self
+        if self._closed:
+            raise RuntimeError(
+                "this Experiment has already run its session and been closed — create a new "
+                "Experiment for another session"
+            )
+        try:
+            return self._open()
+        except BaseException as exc:
+            self._failed = exc
+            if self._is_open():  # failed after the session was complete (dashboard, rerun…)
+                self.close()
+            else:
+                self._abort_open(exc)
+            raise
+
+    def _open(self) -> Experiment:
         origin: Origin = "mock" if self.mock else "live"
         if self._replay_of is not None:
             origin = "replay"
@@ -315,6 +339,42 @@ class Experiment:
             directory=None if self.store.layout is None else str(self.store.layout.root),
         )
         return self
+
+    def _is_open(self) -> bool:
+        return self._opened
+
+    def _abort_open(self, exc: BaseException) -> None:
+        """Undo a partial :meth:`open`: stop what runs, finalise a created directory."""
+        steps: list[tuple[str, Callable[[], Any]]] = []
+        if self.graph is not None:
+            steps.append(("graph", self.graph.stop))
+        if self.source is not None:
+            steps.append(("source", self.source.stop))
+        if self._tap is not None:
+            steps.append(("tap", self._tap.close))
+        if self._tap_thread is not None:
+            steps.append(("tap_thread", lambda: self._tap_thread.join(5)))  # type: ignore[union-attr]
+        if self.store is not None:
+            store = self.store
+            steps.append(
+                (
+                    "store",
+                    lambda: store.finalize(
+                        status="crashed",
+                        events=self.events,
+                        stream_stats=self.stream_stats(),
+                        ended_utc_ns=time.time_ns(),
+                        warnings=[f"open failed: {type(exc).__name__}: {exc}"],
+                    ),
+                )
+            )
+        steps.append(("bus", self.bus.close))
+        for name, step in steps:
+            try:
+                step()
+            except Exception:
+                self._log.exception("session.abort_open_failed", step=name)
+        self._closed = True
 
     def _build_source(self) -> Source:
         assert self.session is not None
@@ -406,6 +466,9 @@ class Experiment:
                     self._anchor_clock()
                     next_anchor = time.monotonic() + self.CLOCK_ANCHOR_PERIOD_S
                 self._stop.wait(0.1)
+        except KeyboardInterrupt:
+            self._interrupted = True  # the second Ctrl-C: still a normal end of the session
+            raise
         except BaseException as exc:
             self._failed = exc
             raise
@@ -461,23 +524,36 @@ class Experiment:
             raise RuntimeError("the session is already running")
         if not self._opened:
             self.open()
-        thread = threading.Thread(
-            target=self.run,
-            kwargs={"duration_s": duration_s, "install_signal_handler": False},
-            name="experiment-run",
-            daemon=True,
-        )
+        self._run_error = None
+
+        def _main() -> None:
+            try:
+                self.run(duration_s=duration_s, install_signal_handler=False)
+            except BaseException as exc:  # kept for wait(); run() already recorded it
+                self._run_error = exc
+                self._log.error("session.run_failed", error=f"{type(exc).__name__}: {exc}")
+
+        thread = threading.Thread(target=_main, name="experiment-run", daemon=True)
         self._run_thread = thread
         thread.start()
         return thread
 
     def wait(self, timeout: float | None = None) -> bool:
-        """Block until a session started with :meth:`start` ends; ``True`` when it has."""
+        """Block until a session started with :meth:`start` ends; ``True`` when it has.
+
+        Raises the exception that ended the session, when it did not end normally (no
+        glasses found, the source failed…), so a protocol loop does not go on annotating a
+        session that is no longer acquiring.
+        """
         thread = self._run_thread
         if thread is None:
             return True
         thread.join(timeout)
-        return not thread.is_alive()
+        if thread.is_alive():
+            return False
+        if self._run_error is not None:
+            raise self._run_error
+        return True
 
     @property
     def running(self) -> bool:
@@ -486,7 +562,11 @@ class Experiment:
         return thread is not None and thread.is_alive()
 
     def close(self) -> Path | None:
-        """Stop everything, finalise the session directory, release the bus. Idempotent."""
+        """Stop everything, finalise the session directory, release the bus. Idempotent.
+
+        The session is ``crashed`` when an error ended it; Ctrl-C ends it normally
+        (``completed``, with a warning that it was interrupted).
+        """
         if not self._opened:
             return None
         self._stop.set()
@@ -520,6 +600,7 @@ class Experiment:
                 stream_stats=self.stream_stats(),
                 ended_utc_ns=time.time_ns(),
                 extra=extra,
+                warnings=["session interrupted (Ctrl-C)"] if self._interrupted else None,
             )
             if root is not None and self.store.layout is not None and self.store.manifest:
                 # the recorder flushed during finalize: measure the directory as it really is
@@ -538,6 +619,7 @@ class Experiment:
         self.bus.close()
         self._log.info("session.close", **{k: v.received for k, v in self.stream_stats().items()})
         self._opened = False
+        self._closed = True
         return root
 
     def __enter__(self) -> Experiment:
@@ -546,7 +628,9 @@ class Experiment:
     def __exit__(
         self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: object
     ) -> None:
-        if exc is not None and self._failed is None:
+        if isinstance(exc, KeyboardInterrupt):
+            self._interrupted = True  # Ctrl-C in the protocol loop: a normal end
+        elif exc is not None and self._failed is None:
             self._failed = exc
         self.close()
 

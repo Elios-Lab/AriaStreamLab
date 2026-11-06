@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -279,3 +280,88 @@ def test_experiment_applies_its_logging_section() -> None:
     finally:
         logging.getLogger().removeHandler(sentinel)
         configure_logging()  # back to the defaults for the other tests
+
+
+def _threads_named(name: str) -> list[threading.Thread]:
+    return [t for t in threading.enumerate() if t.name == name and t.is_alive()]
+
+
+def test_open_failure_stops_what_it_started() -> None:
+    data = {
+        **_fast_config(),
+        "processors": [
+            {"id": "p", "type": "no.such_type", "inputs": ["imu_left"], "outputs": ["o"]}
+        ],
+    }
+    before = len(_threads_named("stats-tap"))
+    exp = Experiment(load_dict(data), mock=True)
+    with pytest.raises(Exception, match=r"no\.such_type"):
+        exp.open()
+    time.sleep(0.4)
+    assert len(_threads_named("stats-tap")) == before  # the statistics tap was stopped
+    with pytest.raises(RuntimeError, match="create a new Experiment"):
+        exp.open()
+
+
+def test_open_failure_after_the_directory_exists_finalises_it_as_crashed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ariastreamlab import api
+    from ariastreamlab.storage.manifest import Manifest
+
+    def broken(self: object) -> None:
+        raise RuntimeError("health log could not start")
+
+    monkeypatch.setattr(api.HealthLog, "start", broken)
+    data = _fast_config()
+    exp = Experiment(load_dict(data), mock=True)
+    with pytest.raises(RuntimeError, match="health log"):
+        exp.open()
+    (root,) = (Path(str(data["storage"]["root"]))).iterdir()  # type: ignore[index]
+    assert Manifest.load(root / "manifest.json").status == "crashed"
+
+
+def test_wait_raises_what_ended_a_started_session() -> None:
+    from ariastreamlab.acquisition.mock import MockSource
+    from ariastreamlab.storage.manifest import Manifest
+
+    class NoGlasses(MockSource):
+        def start(self, bus: object) -> None:
+            raise RuntimeError("no glasses found")
+
+    cfg = load_dict(_fast_config())
+    exp = Experiment(cfg, source=NoGlasses(cfg.enabled_streams(), mock=cfg.mock, session_id="s"))
+    with exp:
+        exp.start()
+        with pytest.raises(RuntimeError, match="no glasses"):
+            exp.wait(10)  # the protocol loop learns that the session is gone
+    assert not exp.running
+    assert Manifest.load(exp.session_dir / "manifest.json").status == "crashed"  # type: ignore[operator]
+
+
+def test_ctrl_c_in_a_started_session_ends_it_normally() -> None:
+    from ariastreamlab.storage.manifest import Manifest
+
+    data = _fast_config()
+    data["mock"] = {"seed": 1, "realtime": True}
+    exp = Experiment(load_dict(data), mock=True, duration_s=60.0)
+
+    def protocol() -> None:
+        with exp:
+            exp.start()
+            time.sleep(0.3)
+            raise KeyboardInterrupt  # Ctrl-C in the protocol loop
+
+    with pytest.raises(KeyboardInterrupt):
+        protocol()
+    m = Manifest.load(exp.session_dir / "manifest.json")  # type: ignore[operator]
+    assert m.status == "completed"
+    assert any("interrupted" in w for w in m.warnings)
+
+
+def test_a_closed_experiment_cannot_run_again() -> None:
+    exp = Experiment(load_dict(_fast_config()), mock=True, duration_s=0.2)
+    with exp:
+        exp.run()
+    with pytest.raises(RuntimeError, match="create a new Experiment"):
+        exp.run()  # used to write an empty "completed" session

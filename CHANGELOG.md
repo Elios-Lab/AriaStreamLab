@@ -44,6 +44,18 @@
 - VRS replay after a seek or with `--start`: sequence numbers continue from each stream's
   record index in the file instead of restarting at 0 (the statistics saw duplicates and
   the recorded `sequence_number` was wrong).
+- `Experiment.open()` cleans up when it fails half-way (an unknown processor type, a
+  storage or dashboard error): the statistics thread and whatever else had started are
+  stopped, and a session directory that already exists is finalised as `crashed` instead of
+  staying `running`.
+- `Experiment.wait()` raises the error that ended a session started with `start()` (no
+  glasses found, a source failure…); before, it returned `True` and a protocol loop went on
+  annotating a session that had stopped.
+- Ctrl-C ends a session normally (`completed`, with an "interrupted" warning) whether it was
+  pressed during `run()` or in the protocol loop of a `start()`ed session; the latter used
+  to mark it `crashed`.
+- An `Experiment` is one session: `open()`/`run()` after `close()` raise instead of writing
+  an empty "completed" session that carried the first one's statistics.
 
 ## 0.2.3 — 2026-10-29
 
