@@ -86,6 +86,8 @@ class AriaGen2Source(Source):
         self.manager = manager or AriaGen2DeviceManager(
             config.device, clock=self.clock, on_transition=on_transition, prompt=prompt
         )
+        self._owns_manager = manager is None
+        """A manager built here is released (``disconnect()``) when the session ends."""
         if manager is not None and on_transition is not None:
             manager.machine.on_transition(on_transition)
         self.health_interval_s = health_interval_s
@@ -143,6 +145,7 @@ class AriaGen2Source(Source):
         mgr = self.manager
         for w in self.plan.warnings:
             log.warning("plan.warning", note=w)
+        streaming_requested = False
         try:
             if mgr.state in (DeviceState.DISCONNECTED, DeviceState.DISCOVERED):
                 mgr.connect()
@@ -152,16 +155,19 @@ class AriaGen2Source(Source):
             mgr.prepare_certs()  # before the server loads the local certificate
             self._start_receiver(bus)
             mgr.configure_streaming(self.plan)
+            streaming_requested = True
             mgr.start_streaming()
         except Exception as exc:
-            self._teardown_receiver()
-            if isinstance(exc, DeviceError):
-                mgr.fail(exc)
-                self.finished.set()
-                raise
-            err = DeviceError(f"live start failed: {type(exc).__name__}: {exc}")
-            mgr.fail(err)
+            err = (
+                exc
+                if isinstance(exc, DeviceError)
+                else DeviceError(f"live start failed: {type(exc).__name__}: {exc}")
+            )
+            self._abort_start(streaming_requested, err)
             self.finished.set()
+            self._started = False
+            if err is exc:
+                raise
             raise err from exc
         self._monitor = threading.Thread(
             target=self._monitor_loop, name="aria-monitor", daemon=True
@@ -209,6 +215,7 @@ class AriaGen2Source(Source):
         if self._monitor is not None:
             self._monitor.join(5)
             self._monitor = None
+        self._release_manager()
         self.finished.set()
         self._started = False
         log.info(
@@ -233,6 +240,32 @@ class AriaGen2Source(Source):
             "warnings": list(self.warnings),
         }
         return SourceStats(received, {}, extra)
+
+    def _abort_start(self, streaming_requested: bool, err: DeviceError) -> None:
+        """Undo a start that failed half-way, so the next session starts from a clean device.
+
+        ``start_streaming`` can raise after the device has begun streaming (a timeout, an
+        error reading the reply): without a ``stop_streaming`` the next run is refused with
+        "already streaming". The receiver is released first (it drops the TimeSyncRef, which
+        must not be read once the connection goes), then the device connection.
+        """
+        self._teardown_receiver()
+        if streaming_requested:
+            try:
+                self.manager.stop_streaming()
+            except Exception:
+                log.debug("live.abort_stop_streaming_failed", exc_info=True)
+        self.manager.fail(err)  # before the disconnect: the session records why it ended
+        self._release_manager()
+
+    def _release_manager(self) -> None:
+        """Close the control connection of a manager this source created (not an injected one)."""
+        if not self._owns_manager:
+            return
+        try:
+            self.manager.disconnect()
+        except Exception:
+            log.debug("live.disconnect_failed", exc_info=True)
 
     # -- manifest helpers --------------------------------------------------------------
     def device_record(self) -> dict[str, Any]:
@@ -473,7 +506,10 @@ class AriaGen2Source(Source):
                         "~/.aria/streaming-certs/persistent fails the TLS handshake silently; "
                         "run `aria_gen2 streaming install-certs`)",
                     )
-                if conns:  # only while the device is connected (see stop())
+                # The TimeSyncRef may only be read while the device is connected (see stop()).
+                # ``conns`` is a snapshot from the top of this pass, and the Wi-Fi control
+                # hand-over above can take ~21 s: ask again right before the read.
+                if conns and not self._stop.is_set() and self._connections():
                     self._last_ticsync = self._ticsync()
                 self.link = {
                     "connections": len(conns),

@@ -13,6 +13,7 @@ import contextlib
 import ipaddress
 import json
 import os
+import socket
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -21,6 +22,7 @@ from typing import Any
 
 from ariastreamlab.acquisition.base import ReplayControl
 from ariastreamlab.config.models import DashboardConfig
+from ariastreamlab.core.errors import AriaStreamLabError
 from ariastreamlab.core.logging import get_logger
 from ariastreamlab.dashboard.state import DashboardState
 from ariastreamlab.monitoring.quality import format_bytes
@@ -120,9 +122,12 @@ class Dashboard:
             return self._ready.wait(timeout) and not self._failed.is_set()
         self._build_pages()
         self._failed.clear()
-        thread = threading.Thread(
-            target=lambda: self.serve(native=native), name="dashboard-server", daemon=True
-        )
+
+        def _serve() -> None:
+            with contextlib.suppress(AriaStreamLabError):  # logged; start() reports it
+                self.serve(native=native)
+
+        thread = threading.Thread(target=_serve, name="dashboard-server", daemon=True)
         self._thread = thread
         thread.start()
         deadline = time.monotonic() + timeout
@@ -251,6 +256,19 @@ class Dashboard:
 
         if self._serving:
             raise RuntimeError("the dashboard server is already running in this process")
+        # A busy port must be found before NiceGUI starts: uvicorn only binds after the
+        # application has started, then exits the process (sys.exit — the app window
+        # flashed and closed) and leaves NiceGUI unable to start again in this process.
+        busy = _port_in_use(self.config.host, self.config.port)
+        if busy is not None:
+            self._failed.set()
+            self._ready.set()
+            log.error("dashboard.port_in_use", url=self.url, error=busy)
+            raise AriaStreamLabError(
+                f"cannot start the dashboard: port {self.config.port} is in use ({busy})",
+                hint="is AriaStreamLab already running (another window, `ariastreamlab run` or "
+                "`design`)? Close it, or choose another port (--port, dashboard.port)",
+            )
         self._serving = True
 
         @app.on_startup
@@ -535,6 +553,22 @@ class _BrowserRun:
             self.state = "failed"
             self.error = str(exc)
             log.exception("dashboard.run_failed")
+
+
+def _port_in_use(host: str, port: int) -> str | None:
+    """Why ``host:port`` cannot be listened on (``None`` when it can), checked as uvicorn binds."""
+    try:
+        infos = socket.getaddrinfo(host or "0.0.0.0", port, type=socket.SOCK_STREAM)
+    except OSError as exc:
+        return f"cannot resolve {host!r}: {exc}"
+    family, kind, proto, _, addr = infos[0]
+    try:
+        with socket.socket(family, kind, proto) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # as uvicorn does
+            sock.bind(addr)
+    except OSError as exc:
+        return exc.strerror or str(exc)
+    return None
 
 
 def _loopback(host: str) -> bool:

@@ -123,6 +123,9 @@ class Experiment:
         self._interrupted = False  # Ctrl-C: the session ends normally ("completed")
         self._run_error: BaseException | None = None  # what ended a start()ed session
         self._run_thread: threading.Thread | None = None
+        self._source_stop_lock = threading.Lock()
+        """One ``source.stop()`` at a time: the run thread's and :meth:`close`'s (a live stop
+        can outlast close's wait, and two concurrent stops of the SDK crash the interpreter)."""
         self._log = get_logger("ariastreamlab.experiment")
         configure_logging(config.logging.level, json_lines=config.logging.format == "json")
 
@@ -359,7 +362,7 @@ class Experiment:
         if self.graph is not None:
             steps.append(("graph", self.graph.stop))
         if self.source is not None:
-            steps.append(("source", self.source.stop))
+            steps.append(("source", self._stop_source))
         if self._tap is not None:
             steps.append(("tap", self._tap.close))
         if self._tap_thread is not None:
@@ -485,7 +488,7 @@ class Experiment:
         finally:
             self.events.mark("acquisition_stop", kind="session")
             self._stopped_at_ns = self.clock.now_ns()
-            self.source.stop()
+            self._stop_source()
             if self.graph is not None:
                 self.graph.stop()  # drains what is queued, in topological order
             self._settle_stats()
@@ -519,6 +522,18 @@ class Experiment:
     def stop(self) -> None:
         """Ask :meth:`run` to return (thread-safe)."""
         self._stop.set()
+
+    RUN_JOIN_S = 30.0
+    """How long :meth:`close` waits for a session started with :meth:`start` to end."""
+    STOP_WAIT_S = 120.0
+    """How much longer :meth:`close` waits for a run thread still stopping its source."""
+
+    def _stop_source(self) -> None:
+        """Stop the source, never twice at the same time (sources make a repeated stop a no-op)."""
+        if self.source is None:
+            return
+        with self._source_stop_lock:
+            self.source.stop()
 
     def start(self, duration_s: float | None = None) -> threading.Thread:
         """Run the session on a background thread and return at once.
@@ -582,10 +597,14 @@ class Experiment:
         self._stop.set()
         thread = self._run_thread
         if thread is not None and thread.is_alive() and thread is not threading.current_thread():
-            thread.join(timeout=30)  # run() stops the source and drains the graph itself
+            thread.join(timeout=self.RUN_JOIN_S)  # run() stops the source, drains the graph
+            if thread.is_alive():
+                # a live stop can take longer (Wi-Fi control reconnect, quiescence, VRS settle)
+                self._log.warning("session.stop_slow", note="waiting for the source to stop")
+                thread.join(timeout=self.STOP_WAIT_S)
         self._run_thread = None
         if self.source is not None:
-            self.source.stop()
+            self._stop_source()  # waits for a stop still running on the run thread
         if self.graph is not None:
             self.graph.stop()
         for sub, thread in self._subscriptions:

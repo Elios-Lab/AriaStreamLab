@@ -315,17 +315,41 @@ class SdkReplaySource(Source):
                 return
             last = now
 
+    _STOP_QUIET_S = 1.0
+    _STOP_MAX_S = 10.0
+
     def stop(self) -> None:  # noqa: D102
         self._stop.set()
         if self._session is not None:
             with contextlib.suppress(Exception):
                 self._session.stop()
             self._session = None
+            # Releasing the handler while an SDK thread is still inside a callback (an image
+            # being decoded) is the teardown crash of live hardware run 10: wait until the
+            # callbacks go quiet first, as the live source does.
+            self._wait_quiescent()
+        if self._watch is not None and self._watch is not threading.current_thread():
+            self._watch.join(2)
+            self._watch = None
         if self._handler is not None:
             with contextlib.suppress(Exception):
                 self._handler.clear_callbacks()
             self._handler = None
         self.finished.set()
+
+    def _wait_quiescent(self) -> None:
+        """Return once no callback has fired for ``_STOP_QUIET_S`` (at most ``_STOP_MAX_S``)."""
+        clock = self._binder._clock
+        quiet_ns = int(self._STOP_QUIET_S * 1e9)
+        deadline = time.monotonic() + self._STOP_MAX_S
+        while time.monotonic() < deadline:
+            last = self._binder.last_host_ns
+            if last == 0 or clock.now_ns() - last >= quiet_ns:
+                return
+            time.sleep(0.05)
+        log.warning(
+            "replay.not_quiescent", note=f"callbacks still firing {self._STOP_MAX_S:g} s after stop"
+        )
 
     def stats(self) -> SourceStats:  # noqa: D102
         return SourceStats(

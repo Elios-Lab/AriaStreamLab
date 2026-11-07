@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+- Live sessions release the glasses' control connection when they end (it stayed open for
+  the life of the process, one more per dashboard session). If `start_streaming` fails
+  after the glasses may already have started (a timeout), the session now stops streaming
+  before giving up; before, the next run was refused with "already streaming".
+- The time-sync reference is read only while the glasses are still connected. The check now
+  runs right before the read, not before the ~21 s Wi-Fi control hand-over, so a device
+  that left during it is no longer read (the run-12 bus error).
+- Closing a session started with `start()` never stops the source while the run thread is
+  still stopping it. A live stop can outlast the 30 s wait, and two concurrent stops of the
+  SDK risked the teardown crash. `close()` waits up to 2 more minutes, then takes its turn.
+- SDK replay of a VRS file waits until the callbacks go quiet before releasing its handler,
+  as live sessions do (the crash pattern of hardware run 10).
+- A recorder thread still writing when its time to drain is up is no longer closed under:
+  the writers are closed once its current write ends, the unwritten samples are named in
+  the manifest's warnings, and the manifest is written (before: "dictionary changed size
+  during iteration", status left at `running`). A failure while writing the events or the
+  timeline is a warning instead of an unfinished session, and `logs/session.log` is
+  detached whatever happens (before, the next session also logged into it).
+- When a processor's `setup()` fails, the processors already started are stopped again
+  instead of running on, subscribed to the bus, after the session gave up.
+- A busy dashboard port is found before the server starts. The application window now says
+  "port 8765 is in use" with a hint instead of flashing and closing, and a session's
+  dashboard can start again in the same process once the port is free (before: "Cannot
+  add middleware after an application has started").
+
 ## 0.2.5 — 2026-11-07
 
 - Relative paths in an experiment file are relative to that file, whatever directory the

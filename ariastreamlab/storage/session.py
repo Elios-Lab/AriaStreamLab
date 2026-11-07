@@ -176,14 +176,51 @@ class Session:
         if self.layout is None or self.manifest is None or self._finalized:
             return None if self.layout is None else self.layout.root
         self._finalized = True
-        recorder_stats = {}
+        try:
+            return self._finalize(
+                status=status,
+                events=events,
+                stream_stats=stream_stats,
+                ended_utc_ns=ended_utc_ns,
+                extra=extra,
+                warnings=warnings,
+            )
+        finally:  # whatever failed, the next session must not log into this one's file
+            self._detach_log_file()
+
+    def _finalize(
+        self,
+        *,
+        status: Status,
+        events: EventLog,
+        stream_stats: Mapping[str, StreamStats],
+        ended_utc_ns: int,
+        extra: Mapping[str, Any] | None,
+        warnings: list[str] | None,
+    ) -> Path:
+        assert self.layout is not None
+        assert self.manifest is not None
+        recorder_stats: dict[str, Any] = {}
         if self.recorder is not None:
-            self.recorder.close()
-            recorder_stats = self.recorder.stats()
+            try:
+                self.recorder.close()
+                recorder_stats = dict(self.recorder.stats())
+            except Exception as exc:  # still write the manifest: the session is on disk
+                log.exception("session.recorder_close_failed")
+                self.manifest.warnings.append(f"recorder: {type(exc).__name__}: {exc}")
             if self.recorder.errors:
                 self.manifest.warnings.extend(f"recorder: {e}" for e in self.recorder.errors)
-        n_events = write_events(self.layout.events_file, events.all())
-        n_timeline = write_timeline(self.layout)
+        n_events = n_timeline = 0
+        try:
+            n_events = write_events(self.layout.events_file, events.all())
+        except Exception as exc:
+            log.exception("session.events_write_failed")
+            self.manifest.warnings.append(f"events.jsonl not written: {type(exc).__name__}: {exc}")
+        try:
+            n_timeline = write_timeline(self.layout)
+        except Exception as exc:
+            log.exception("session.timeline_write_failed")
+            self.manifest.warnings.append(f"timeline not written: {type(exc).__name__}: {exc}")
         for sid, s in stream_stats.items():
             rec = recorder_stats.get(sid)
             self.manifest.streams[sid] = StreamRecord(
@@ -213,7 +250,6 @@ class Session:
                     setattr(self.manifest, k, v)
         self.manifest.finalize(status, ended_utc_ns)
         self.manifest.write(self.layout.manifest)
-        self._detach_log_file()
         log.info(
             "session.finalized",
             status=status,

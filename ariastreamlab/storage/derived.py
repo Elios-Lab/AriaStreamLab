@@ -83,6 +83,9 @@ class DerivedRecorder:
         self._queue_size = queue_size
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
+        self._write_lock = threading.Lock()
+        """Held while the thread writes or flushes, and while close() closes the writers."""
+        self._closed = False
         self.dropped_unknown = 0
         self.errors: list[str] = []
 
@@ -115,10 +118,25 @@ class DerivedRecorder:
         if t is not None:
             t.join(timeout)
             self._thread = None
+            if t.is_alive():  # a slow disk: what is still queued is lost, and said so
+                left = self.queue_depth()
+                self.errors.append(
+                    f"the writer thread did not drain within {timeout:g} s; "
+                    f"{left} queued samples were not written"
+                )
+                log.error("recorder.drain_timeout", timeout_s=timeout, queued=left)
         for sub in self._subs:
             sub.close()
+        # the thread may still be inside a write: wait for it, then it sees ``_closed`` and
+        # stops touching the writers (before, closing them under it raised "dictionary
+        # changed size during iteration" and left the manifest at "running")
+        with self._write_lock:
+            if self._closed:
+                return
+            self._closed = True
+            writers = list(self._writers.items())
         self._subs.clear()
-        for sid, w in self._writers.items():
+        for sid, w in writers:
             try:
                 w.close()
                 write_meta(
@@ -160,30 +178,50 @@ class DerivedRecorder:
     # -- internals ---------------------------------------------------------------------
     def _run(self) -> None:
         last_check = time.monotonic()
-        while True:
+        subs = list(self._subs)
+        while not self._closed:
             got = False
-            for sub in self._subs:
+            for sub in subs:
                 for item in sub.drain():
                     got = True
-                    self._handle(item)
-            if not got and self._subs:
+                    if not self._handle_locked(item):
+                        return
+            if not got and subs:
                 # idle: block briefly on one queue instead of spinning (the others are
                 # drained on the next pass; a 10 ms wake-up is invisible at our rates)
-                item = self._subs[0].get(timeout=0.01)
+                item = subs[0].get(timeout=0.01)
                 if item is not None:
                     got = True
-                    self._handle(item)
+                    if not self._handle_locked(item):
+                        return
             now = time.monotonic()
             if now - last_check >= 1.0:
                 last_check = now
-                for w in self._writers.values():
-                    try:
-                        w.maybe_flush()
-                    except Exception as exc:
-                        self.errors.append(f"{w.stream_id}: flush: {exc}")
-                        log.exception("recorder.flush_failed", stream=w.stream_id)
-            if self._stop.is_set() and not got and all(len(s) == 0 for s in self._subs):
+                if not self._flush_locked():
+                    return
+            if self._stop.is_set() and not got and all(len(s) == 0 for s in subs):
                 break
+
+    def _flush_locked(self) -> bool:
+        """Flush what is due unless close() has taken the writers; ``False`` once it has."""
+        with self._write_lock:
+            if self._closed:
+                return False
+            for w in self._writers.values():
+                try:
+                    w.maybe_flush()
+                except Exception as exc:
+                    self.errors.append(f"{w.stream_id}: flush: {exc}")
+                    log.exception("recorder.flush_failed", stream=w.stream_id)
+            return True
+
+    def _handle_locked(self, sample: AnySample) -> bool:
+        """Write one sample unless close() has taken the writers; ``False`` once it has."""
+        with self._write_lock:
+            if self._closed:
+                return False
+            self._handle(sample)
+            return True
 
     def _handle(self, sample: AnySample) -> None:
         sid = sample.stream_id

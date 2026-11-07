@@ -127,6 +127,7 @@ class ProcessingGraph:
         self._health_thread: threading.Thread | None = None
         self._health_stop = threading.Event()
         self._started = False
+        self._stop_lock = threading.Lock()
         for r in self.resolved:
             try:
                 proc = r.cls()
@@ -154,11 +155,26 @@ class ProcessingGraph:
         return len(self.workers)
 
     def start(self) -> None:
-        """Start every worker (downstream first, so no early output is missed)."""
+        """Start every worker (downstream first, so no early output is missed).
+
+        When one worker fails to start (its ``setup()`` raised), the workers already started
+        are stopped again before the error is raised: nothing is left subscribed or running.
+        """
         if self._started:
             return
-        for pid in reversed(self._order):
-            self.workers[pid].start()
+        started: list[ProcessorWorker] = []
+        try:
+            for pid in reversed(self._order):
+                worker = self.workers[pid]
+                started.append(worker)  # a failed start still subscribed: stop it too
+                worker.start()
+        except BaseException:
+            for worker in reversed(started):  # upstream first, as in stop()
+                try:
+                    worker.stop(1.0)
+                except Exception:
+                    log.exception("pipeline.rollback_failed", processor=worker.id)
+            raise
         self._started = True
         if self.health_interval_s > 0:
             self._health_stop.clear()
@@ -170,15 +186,16 @@ class ProcessingGraph:
 
     def stop(self, timeout_per_processor: float = 10.0) -> None:
         """Stop in topological order so each stage drains before its consumers stop."""
-        if not self._started:
-            return
-        self._health_stop.set()
-        for pid in self._order:
-            self.workers[pid].stop(timeout_per_processor)
-        if self._health_thread is not None:
-            self._health_thread.join(2)
-            self._health_thread = None
-        self._started = False
+        with self._stop_lock:  # the run thread and close() may both stop the graph
+            if not self._started:
+                return
+            self._health_stop.set()
+            for pid in self._order:
+                self.workers[pid].stop(timeout_per_processor)
+            if self._health_thread is not None:
+                self._health_thread.join(2)
+                self._health_thread = None
+            self._started = False
         self.bus.publish("health.pipeline", self.stats_dict())
         log.info("pipeline.stop", **{pid: w.stats().fired for pid, w in self.workers.items()})
 

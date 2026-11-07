@@ -436,3 +436,108 @@ def test_stall_is_detected_and_ends_the_session(
     assert m.status == "completed" and any("stalled" in w for w in m.warnings)
     if hostile:
         assert any(w.startswith("thermal mitigation triggered (") for w in m.warnings)
+
+
+# --------------------------------------------------------------------------- teardown
+
+
+def _own_manager_source(cfg: Any, monkeypatch: pytest.MonkeyPatch, **kw: Any) -> Any:
+    """A source that builds its own manager, as in a real session (not an injected one)."""
+    from ariastreamlab.acquisition.aria_gen2.adapter import AriaGen2Source
+
+    monkeypatch.setattr(device_mod, "AriaCli", lambda **_: FakeCli())
+    return AriaGen2Source(cfg, session_id="s", health_interval_s=0.2, **kw)
+
+
+def test_a_live_session_releases_the_device_connection(
+    fake_sdk: FakeSdk, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _config(tmp_path, device={"connection": {"hotspot": {"start": False}}})
+    src = _own_manager_source(cfg, monkeypatch)
+    bus = EventBus()
+    src.start(bus)
+    rec = FakeStreamReceiver.instances[0]
+    rec.connect_device(ip="192.168.68.165")
+    rec.push_imu(5)
+    rec.conns = []  # the device closes its connection when streaming stops
+    src.stop()
+    assert fake_sdk.log[-2:] == ["stop_streaming", "disconnect_all"]
+    assert src.manager.state is DeviceState.DISCONNECTED
+    bus.close()
+
+
+def test_an_injected_manager_stays_connected(fake_sdk: FakeSdk, tmp_path: Path) -> None:
+    from ariastreamlab.acquisition.aria_gen2.adapter import AriaGen2Source
+
+    cfg = _config(tmp_path, device={"connection": {"hotspot": {"start": False}}})
+    mgr = device_mod.AriaGen2DeviceManager(cfg.device, sdk=fake_sdk, cli=FakeCli())
+    src = AriaGen2Source(cfg, session_id="s", manager=mgr, health_interval_s=0.2)
+    bus = EventBus()
+    src.start(bus)
+    src.stop()
+    assert "disconnect_all" not in fake_sdk.log  # whoever made it decides
+    bus.close()
+
+
+def test_a_failed_start_streaming_stops_the_device_and_disconnects(
+    fake_sdk: FakeSdk, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.unit.test_aria_gen2_control import FakeDevice
+
+    def started_then_timed_out(self: Any) -> None:
+        self.log.append("start_streaming")
+        raise RuntimeError("timed out waiting for the reply")
+
+    monkeypatch.setattr(FakeDevice, "start_streaming", started_then_timed_out)
+    cfg = _config(tmp_path, device={"connection": {"hotspot": {"start": False}}})
+    states: list[DeviceState] = []
+    src = _own_manager_source(cfg, monkeypatch, on_transition=lambda t: states.append(t.current))
+    with pytest.raises(DeviceError, match="timed out"):
+        src.start(EventBus())
+    ops = fake_sdk.log
+    # the device may be streaming already: stop it, or the next run is "already streaming"
+    assert ops.index("stop_streaming") > ops.index("start_streaming")
+    assert ops[-1] == "disconnect_all"
+    assert FakeStreamReceiver.instances[0].stopped
+    assert states[-2:] == [DeviceState.ERROR, DeviceState.DISCONNECTED]  # the cause is kept
+    assert src.finished.is_set()
+
+
+def test_ticsync_is_not_read_when_the_device_left_during_the_wifi_hand_over(
+    fake_sdk: FakeSdk, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ariastreamlab.acquisition.aria_gen2.adapter import AriaGen2Source
+    from tests.unit.test_aria_gen2_control import FakeClient
+
+    reads_without_device: list[str] = []
+
+    class WatchedTimeSync(FakeTimeSync):
+        def is_valid(self) -> bool:
+            if not FakeStreamReceiver.instances[0].conns:
+                reads_without_device.append("is_valid")  # the run-12 bus error
+            return True
+
+    original_connect = FakeClient.connect
+
+    def connect(self: Any, target: Any) -> Any:
+        dev = original_connect(self, target)
+        if target.ip == "192.168.37.28":  # the ~21 s Wi-Fi hand-over: the device leaves
+            FakeStreamReceiver.instances[0].conns = []
+        return dev
+
+    monkeypatch.setattr(FakeStreamReceiver, "get_time_sync", lambda self: WatchedTimeSync())
+    monkeypatch.setattr(FakeClient, "connect", connect)
+    cfg = _config(tmp_path)  # wifi_control: early
+    mgr = device_mod.AriaGen2DeviceManager(cfg.device, sdk=fake_sdk, cli=FakeCli())
+    src = AriaGen2Source(cfg, session_id="s", manager=mgr, health_interval_s=0.2)
+    bus = EventBus()
+    src.start(bus)
+    FakeStreamReceiver.instances[0].connect_device()  # over Wi-Fi
+    deadline = time.monotonic() + 5
+    while mgr.transport != "wifi" and time.monotonic() < deadline:
+        time.sleep(0.05)
+    time.sleep(1.2)  # one more monitor pass
+    src.stop()
+    bus.close()
+    assert mgr.transport == "wifi"
+    assert reads_without_device == []
