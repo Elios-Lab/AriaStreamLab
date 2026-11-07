@@ -69,8 +69,15 @@ participant leaves.
 
 ```bash
 git clone https://github.com/Elios-Lab/AriaStreamLab.git && cd AriaStreamLab
-bash scripts/install.sh --sdk        # macOS / Linux; Windows: powershell scripts/install.ps1 -Sdk
+bash scripts/install.sh --sdk        # macOS (Apple Silicon) / Linux
 ```
+
+Meta's packages have no Windows build: neither the client SDK (streaming) nor
+`projectaria_tools` (reading VRS recordings). On Windows,
+`powershell -ExecutionPolicy Bypass -File scripts\install.ps1` installs AriaStreamLab for
+designing experiments, running synthetic sessions and opening sessions recorded on a Mac or
+Linux computer (manifest, quality report, events, processor outputs), without the glasses
+or the raw VRS replay.
 
 The script creates `.venv` with a Python version Meta's SDK supports (3.10–3.12), installs
 AriaStreamLab and the SDK, runs `ariastreamlab doctor` and opens the application window. The

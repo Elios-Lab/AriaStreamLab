@@ -58,6 +58,20 @@
 - `TimeSeriesBuffer.interpolate(ts, interp_imu)` (or `interp_pose`) works on a buffer of
   samples; it raised `AttributeError`. `ns_to_timedelta` truncates negative values toward
   zero, as documented.
+- `scripts/release.py` refuses to release unless it is on `main` and level with
+  `origin/main` (it could tag a feature branch and print `git push origin main`), to a
+  version that is higher than the current one, whose tag exists neither locally nor on
+  `origin`. A failed commit (a hook, no git identity) puts `pyproject.toml` and
+  `CHANGELOG.md` back instead of leaving a half-applied bump.
+- Install scripts: an existing `.venv` is reused only when it runs Python 3.10–3.12 (or
+  runs at all); otherwise the script says how to remove it. `install.ps1` stops when a
+  command fails (PowerShell's error preference does not cover programs, so a failed
+  `pip install` still ended with "Environment ready"), and `-Sdk` explains that Meta's
+  packages have no Windows build instead of failing in pip. The README and the manual no
+  longer suggest streaming from Windows, and say what works there.
+- CI: mypy also runs on Python 3.10, whose older numpy / pyarrow / pydantic have broken
+  annotations before; the actions run on Node 24 (`actions/checkout` v7.0.1,
+  `astral-sh/setup-uv` v10.3.2, `actions/upload-artifact` v7.0.2, still pinned to commits).
 
 ## 0.2.5 — 2026-11-07
 

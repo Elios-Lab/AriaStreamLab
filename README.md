@@ -62,7 +62,7 @@ AriaStreamLab into it and opens the application:
 ```bash
 git clone https://github.com/Elios-Lab/AriaStreamLab.git && cd AriaStreamLab
 bash scripts/install.sh                              # macOS / Linux
-powershell -ExecutionPolicy Bypass -File scripts\install.ps1   # Windows
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1   # Windows (no glasses: see below)
 ```
 
 (or, by hand: `python3.12 -m venv .venv && source .venv/bin/activate && pip install -e .`,
@@ -73,6 +73,12 @@ SDK and `projectaria_tools` into the environment with one click, pairs the glass
 the streaming certificates, starts or inspects the hotspot and stops a stuck stream — each
 command's output streamed into the page. The one thing it cannot do is create the environment
 it runs in, which is what the script is for.
+
+Meta's packages (the SDK, for streaming from the glasses, and `projectaria_tools`, for reading
+their VRS recordings) exist for macOS (Apple Silicon) and Linux only. On Windows the
+application designs experiments, runs and replays synthetic sessions, and opens sessions
+recorded elsewhere (manifest, quality report, events, processor outputs), but it cannot
+stream from the glasses or replay their raw recordings.
 
 `ariastreamlab` with no arguments opens a desktop window (macOS, Windows, Linux — a native
 window, not a browser tab) with five pages: **Home**, **Setup**, **Design** (build and

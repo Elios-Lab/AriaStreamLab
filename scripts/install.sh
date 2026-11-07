@@ -36,7 +36,21 @@ if [ -z "$PY" ]; then
   exit 1
 fi
 echo "using $PY ($("$PY" --version))"
-if [ ! -d .venv ]; then
+if [ -d .venv ]; then
+  # an existing environment is reused only if it runs a version the SDK supports
+  venv_ver="$(.venv/bin/python -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || echo "broken")"
+  case "$venv_ver" in
+    3.10|3.11|3.12) echo "reusing .venv (Python $venv_ver)" ;;
+    broken)
+      echo "The existing .venv has no working Python." >&2
+      echo "Remove it and run this script again:  rm -rf .venv && bash scripts/install.sh $*" >&2
+      exit 1 ;;
+    *)
+      echo "The existing .venv runs Python $venv_ver, which Meta's SDK does not support (3.10–3.12)." >&2
+      echo "Remove it and run this script again:  rm -rf .venv && bash scripts/install.sh $*" >&2
+      exit 1 ;;
+  esac
+else
   "$PY" -m venv .venv
 fi
 # shellcheck disable=SC1091
