@@ -31,7 +31,7 @@ from typing import Any
 from ariastreamlab.acquisition.base import DeviceTransition, ReplayControl, Source
 from ariastreamlab.acquisition.mock import MockSource
 from ariastreamlab.acquisition.replay import make_replay_source
-from ariastreamlab.config.loader import load_config, load_preset
+from ariastreamlab.config.loader import load_config, load_dict, load_preset
 from ariastreamlab.config.models import DashboardConfig, ExperimentConfig
 from ariastreamlab.core.bus import DropPolicy, EventBus, Subscription
 from ariastreamlab.core.errors import AriaStreamLabError, ConfigError, ReplayError
@@ -190,14 +190,24 @@ class Experiment:
         """Replay a recorded session directory or a ``.vrs`` file.
 
         Without ``config`` a session directory replays with its own frozen ``experiment.json``
-        (same processors, same settings); a bare VRS file uses the ``full_capture`` preset.
+        (same processors, same settings) and the new session is written next to it; a bare
+        VRS file uses the ``full_capture`` preset.
         """
         p = Path(path)
         explicit_config = True
         if config is None:
             frozen = p / "experiment.json"
             if frozen.exists():
-                cfg = load_config(frozen)
+                data = json.loads(frozen.read_text(encoding="utf-8"))
+                # next to the session replayed: the frozen root may be relative (sessions
+                # recorded before 0.2.5 kept it as written, and it is not relative to the
+                # session folder) or point at another computer (a copied session)
+                storage = data.get("storage")
+                data["storage"] = {
+                    **(storage if isinstance(storage, dict) else {}),
+                    "root": str(p.resolve().parent),
+                }
+                cfg = load_dict(data, base_dir=p.resolve(), source=frozen)
             else:
                 cfg = load_preset("full_capture")
                 explicit_config = False  # a bare file: replay everything it contains

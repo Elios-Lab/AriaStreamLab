@@ -40,16 +40,16 @@ class Downsample(Processor):
         super().setup(ctx)
         self._n = 0
         self._last_ts: int | None = None
-        self._min_dt_ns = None if self.params.rate_hz is None else int(1e9 / self.params.rate_hz)
 
     def process(self, inputs: Inputs) -> Emit | None:  # noqa: D102
         s = inputs.primary
-        if self._min_dt_ns is None:
-            keep = self._n % self.params.every == 0
+        p = self.params  # read per sample: a live change applies from the next one
+        if p.rate_hz is None:
+            keep = self._n % p.every == 0
             self._n += 1
         else:
             ts = s.device_timestamp_ns
-            keep = self._last_ts is None or ts - self._last_ts >= self._min_dt_ns
+            keep = self._last_ts is None or ts - self._last_ts >= int(1e9 / p.rate_hz)
             if keep:
                 self._last_ts = ts
         return Emit(self.ctx.outputs[0], s.data, s.metadata) if keep else None

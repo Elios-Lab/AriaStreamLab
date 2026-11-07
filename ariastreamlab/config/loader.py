@@ -4,6 +4,12 @@
 ``"extends": "../base.json"`` is resolved relative to the file being loaded. Inheritance is
 single and recursive (a preset may itself extend another). Merge rule: dictionaries are
 deep-merged key by key, every other value (lists included) is replaced by the child's.
+
+Relative paths in a file (``storage.root``, ``processors_path``,
+``device.profile.custom_json``) are relative to *that* file's folder — a parent's paths to the
+parent's folder — never to the current directory, so ``ariastreamlab run``, the application
+and a protocol script started from anywhere write and read the same places. A configuration
+given as a dictionary, without a file, keeps them relative to the current directory.
 """
 
 from __future__ import annotations
@@ -89,10 +95,38 @@ def resolve_extends(data: dict[str, Any], base_dir: Path | None, _depth: int = 0
         parent = _read_json(parent_path)
         parent_dir = parent_path.parent
     parent = resolve_extends(parent, parent_dir, _depth + 1)
+    if parent_dir is not None:
+        # the parent's own relative paths point next to the parent, not next to the child
+        parent = anchor_paths(parent, parent_dir)
     child = {k: v for k, v in data.items() if k != "extends"}
     merged = deep_merge(parent, child)
     merged.pop("extends", None)
     return merged
+
+
+#: Path-valued settings, as key paths into the configuration dictionary.
+PATH_FIELDS: tuple[tuple[str, ...], ...] = (
+    ("processors_path",),
+    ("storage", "root"),
+    ("device", "profile", "custom_json"),
+)
+
+
+def anchor_paths(data: Mapping[str, Any], base_dir: Path) -> dict[str, Any]:
+    """Return ``data`` with each relative path setting made absolute against ``base_dir``."""
+    out: dict[str, Any] = json.loads(json.dumps(data, default=str))  # a deep copy
+    for keys in PATH_FIELDS:
+        node: Any = out
+        for k in keys[:-1]:
+            node = node.get(k) if isinstance(node, dict) else None
+        if not isinstance(node, dict):
+            continue
+        value = node.get(keys[-1])
+        if isinstance(value, str) and value and not Path(value).expanduser().is_absolute():
+            node[keys[-1]] = str((base_dir / value).resolve())
+        elif isinstance(value, str) and value:
+            node[keys[-1]] = str(Path(value).expanduser())
+    return out
 
 
 def load_dict(
@@ -100,6 +134,8 @@ def load_dict(
 ) -> ExperimentConfig:
     """Validate an already-parsed dictionary (resolving ``extends``)."""
     resolved = resolve_extends(data, base_dir)
+    if base_dir is not None:
+        resolved = anchor_paths(resolved, base_dir)
     try:
         cfg = ExperimentConfig.model_validate(resolved)
     except ValidationError as exc:
@@ -108,12 +144,9 @@ def load_dict(
 
 
 def _anchor_processors_path(cfg: ExperimentConfig, base_dir: Path | None) -> ExperimentConfig:
-    """Make ``processors_path`` relative to the JSON file; default to ``processors/`` next to it."""
-    pp = cfg.processors_path
-    if pp is not None:
-        if not pp.is_absolute() and base_dir is not None:
-            pp = (base_dir / pp).resolve()
-        return cfg.model_copy(update={"processors_path": pp})
+    """Default ``processors_path`` to ``processors/`` next to the JSON file when it exists."""
+    if cfg.processors_path is not None:
+        return cfg
     if base_dir is not None and (base_dir / "processors").is_dir():
         return cfg.model_copy(update={"processors_path": (base_dir / "processors").resolve()})
     return cfg

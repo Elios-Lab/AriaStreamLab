@@ -103,8 +103,9 @@ class ProfileConfig(_Strict):
     """Which Aria streaming profile is used.
 
     ``predefined``: pick the closest of Meta's tested profiles for the requested streams
-    (default, stable). ``custom``: generate a custom profile JSON from the streams section.
-    ``named``: use ``name`` verbatim (streams section only selects callbacks).
+    (default, stable). ``custom``: send the profile JSON file ``custom_json`` (a path relative
+    to the experiment file). ``named``: use ``name`` verbatim (streams section only selects
+    callbacks).
     """
 
     mode: Literal["predefined", "custom", "named"] = "predefined"
@@ -115,6 +116,11 @@ class ProfileConfig(_Strict):
     def _check(self) -> ProfileConfig:
         if self.mode == "named" and not self.name:
             raise ValueError("device.profile.name is required when mode is 'named'")
+        if self.mode == "custom" and self.custom_json is None:
+            raise ValueError(
+                "device.profile.custom_json is required when mode is 'custom' (a profile JSON "
+                "exported from the device; AriaStreamLab does not generate profiles)"
+            )
         return self
 
 
@@ -307,12 +313,23 @@ class ExperimentConfig(_Strict):
 
     # -- derived views --------------------------------------------------------------
     def enabled_streams(self) -> dict[str, dict[str, Any]]:
-        """Concrete enabled stream ids → effective parameters (defaults applied)."""
+        """Concrete enabled stream ids → effective parameters (defaults applied).
+
+        A disabled entry wins over an enabled group: ``"slam": {...}`` (say from a preset)
+        with ``"slam_side_left": {"enabled": false}`` streams the three other SLAM cameras.
+        A disabled group does not stop one of its members enabled on its own.
+        """
+        disabled = {
+            sid for key, cfg in self.streams.items() if not cfg.enabled for sid in _expand(key)
+        }
         out: dict[str, dict[str, Any]] = {}
         for key, cfg in self.streams.items():
             if not cfg.enabled:
                 continue
-            for sid in REGISTRY.expand(key):
+            members = _expand(key)
+            for sid in members:
+                if len(members) > 1 and sid in disabled:
+                    continue
                 desc = REGISTRY.get(sid)
                 params = {name: spec.default for name, spec in desc.parameters.items()}
                 params.update(cfg.parameters())
@@ -351,10 +368,12 @@ class ExperimentConfig(_Strict):
                 members = REGISTRY.expand(key)
             except RegistryError as exc:
                 raise ValueError(str(exc)) from None
-            for sid in members:
+            # only enabled entries can clash: a disabled one just switches its streams off
+            for sid in members if cfg.enabled else ():
                 if sid in seen:
                     raise ValueError(
-                        f"streams: {sid!r} is configured twice (via {seen[sid]!r} and {key!r})"
+                        f"streams: {sid!r} is configured twice (via {seen[sid]!r} and {key!r});"
+                        f' disable one of them ("enabled": false)'
                     )
                 seen[sid] = key
             spec_owner = REGISTRY.get(members[0])
@@ -370,6 +389,12 @@ class ExperimentConfig(_Strict):
                     spec.validate(value, key)
                 except RegistryError as exc:
                     raise ValueError(str(exc)) from None
+        rgb = self.enabled_streams().get("rgb")
+        if rgb is not None and rgb.get("resolution") == "2560x1920" and rgb.get("fps", 0) > 10:
+            raise ValueError(
+                f"streams.rgb: 2560x1920 is only available up to 10 fps (fps is {rgb['fps']});"
+                " use 2016x1512 for a higher rate"
+            )
 
     def _validate_processors(self) -> None:
         ids = [p.id for p in self.processors]
@@ -433,6 +458,14 @@ class ExperimentConfig(_Strict):
                 raise ValueError(
                     f"dashboard.show: {s!r} is neither an enabled stream nor a processor output"
                 )
+
+
+def _expand(key: str) -> tuple[str, ...]:
+    """Stream ids of a config key; an unknown key expands to nothing (validation reports it)."""
+    try:
+        return REGISTRY.expand(key)
+    except RegistryError:
+        return ()
 
 
 def format_validation_error(exc: Exception, path: Path | None = None) -> ConfigError:

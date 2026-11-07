@@ -24,7 +24,9 @@ Recorded session ──▶ Replay source ──▶ (same event bus, processors a
 
 ## What a session gives you
 
-Every run writes one self-describing directory, `sessions/<utc>_<experiment>_<participant>/`:
+Every run writes one self-describing directory, `sessions/<utc>_<experiment>_<participant>/`
+(under `storage.root`, which is relative to the experiment file — `sessions/` next to it by
+default, wherever the command is started from):
 
 | Path | Content |
 |---|---|
@@ -87,8 +89,8 @@ Everything the window does is also a command, for scripts and remote machines:
 ariastreamlab doctor                      # environment check
 ariastreamlab inspect-config examples/mock_experiment.json
 ariastreamlab run examples/mock_experiment.json --mock --duration 10    # synthetic data
-ariastreamlab inspect sessions/<the new folder>            # what was written, quality summary
-ariastreamlab replay sessions/<the new folder> --speed 0   # same pipeline, from disk
+ariastreamlab inspect examples/sessions/<the new folder>   # what was written, quality summary
+ariastreamlab replay examples/sessions/<the new folder> --speed 0   # same pipeline, from disk
 ```
 
 The synthetic source produces camera frames, IMU, gaze, poses, audio and the small sensors

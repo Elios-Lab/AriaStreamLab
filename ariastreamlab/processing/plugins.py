@@ -9,16 +9,23 @@ A ``type`` in the configuration is resolved in this order:
 3. ``"package.module:ClassName"`` — any importable class;
 4. ``"my_file.py:ClassName"`` or ``"my_file:ClassName"`` or just ``"my_file"`` (when the file
    defines exactly one :class:`Processor` subclass), looked up in ``processors_path`` from the
-   configuration (default: the ``processors/`` directory next to the experiment JSON).
+   configuration (default: the ``processors/`` directory next to the experiment JSON; the
+   current directory only when there is no ``processors_path`` at all).
+
+A processor file is imported once per path and imported again when it changes on disk, so
+two experiments with a ``processors/filter.py`` of their own get their own class, and an
+edited file is picked up by the next run in the same application.
 """
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import importlib.metadata
 import importlib.util
 import inspect
 import sys
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
@@ -26,7 +33,16 @@ from types import ModuleType
 from ariastreamlab.core.errors import ProcessingError
 from ariastreamlab.processing.base import Processor
 
-__all__ = ["BUILTINS", "ENTRY_POINT_GROUP", "ProcessorInfo", "list_processors", "resolve"]
+__all__ = [
+    "BUILTINS",
+    "ENTRY_POINT_GROUP",
+    "ProcessorInfo",
+    "list_processors",
+    "qualified_name",
+    "resolve",
+]
+
+USER_MODULE_PREFIX = "ariastreamlab_user_processors."
 
 ENTRY_POINT_GROUP = "ariastreamlab.processors"
 
@@ -65,7 +81,20 @@ class ProcessorInfo:
 
     @property
     def qualified(self) -> str:  # noqa: D102
-        return f"{self.cls.__module__}:{self.cls.__qualname__}"
+        return qualified_name(self.cls)
+
+
+def qualified_name(cls: type) -> str:
+    """``module:Class`` as recorded in manifests; a processor file is ``…_processors.<stem>``.
+
+    File modules are imported under a name unique to their path; the recorded name leaves
+    that suffix out so manifests read as before (the file's own path is in the session's
+    frozen ``experiment.json``).
+    """
+    module = cls.__module__
+    if module.startswith(USER_MODULE_PREFIX):
+        module = USER_MODULE_PREFIX + _USER_STEMS.get(module, module[len(USER_MODULE_PREFIX) :])
+    return f"{module}:{cls.__qualname__}"
 
 
 def resolve(type_name: str, processors_path: Path | None = None) -> type[Processor]:
@@ -162,10 +191,10 @@ def _from_file(
     stem: str, cls_name: str | None, processors_path: Path | None, type_name: str
 ) -> type[Processor]:
     name = stem[:-3] if stem.endswith(".py") else stem
-    candidates = []
-    if processors_path is not None:
-        candidates.append(processors_path / f"{name}.py")
-    candidates.append(Path(f"{name}.py"))
+    # the configured folder only; the current directory when no folder is configured
+    candidates = [
+        (processors_path / f"{name}.py") if processors_path is not None else Path(f"{name}.py")
+    ]
     path = next((c for c in candidates if c.is_file()), None)
     if path is None:
         where = f" in {processors_path}" if processors_path else ""
@@ -195,18 +224,38 @@ def _from_file(
     return found[0]
 
 
+_LOADED: dict[Path, tuple[tuple[int, int], ModuleType]] = {}
+_USER_STEMS: dict[str, str] = {}  # unique module name → file stem
+_LOAD_LOCK = threading.Lock()
+
+
 def _load_file(path: Path) -> ModuleType:
-    mod_name = f"ariastreamlab_user_processors.{path.stem}"
-    if mod_name in sys.modules:
-        return sys.modules[mod_name]
-    spec = importlib.util.spec_from_file_location(mod_name, path)
-    if spec is None or spec.loader is None:
-        raise ProcessingError(f"cannot load processor file {path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[mod_name] = module
-    try:
-        spec.loader.exec_module(module)
-    except Exception as exc:
-        del sys.modules[mod_name]
-        raise ProcessingError(f"error while importing {path}: {type(exc).__name__}: {exc}") from exc
-    return module
+    """Import a processor file, keyed by its absolute path; again when the file changed."""
+    path = path.resolve()
+    st = path.stat()
+    stamp = (st.st_mtime_ns, st.st_size)
+    with _LOAD_LOCK:
+        cached = _LOADED.get(path)
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
+        digest = hashlib.sha1(str(path).encode("utf-8")).hexdigest()[:12]
+        mod_name = f"{USER_MODULE_PREFIX}{path.stem}_{digest}"
+        spec = importlib.util.spec_from_file_location(mod_name, path)
+        if spec is None or spec.loader is None:
+            raise ProcessingError(f"cannot load processor file {path}")
+        module = importlib.util.module_from_spec(spec)
+        previous = sys.modules.get(mod_name)
+        sys.modules[mod_name] = module
+        try:
+            spec.loader.exec_module(module)
+        except Exception as exc:
+            if previous is None:
+                del sys.modules[mod_name]
+            else:
+                sys.modules[mod_name] = previous
+            raise ProcessingError(
+                f"error while importing {path}: {type(exc).__name__}: {exc}"
+            ) from exc
+        _LOADED[path] = (stamp, module)
+        _USER_STEMS[mod_name] = path.stem
+        return module

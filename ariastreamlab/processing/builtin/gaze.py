@@ -95,8 +95,15 @@ class ProjectToRgb(Processor):
         super().setup(ctx)
         self._ready = False
         self._warned = False
+        self._camera_changed = False
         if ctx.calibration:
             self.on_calibration(ctx.calibration)
+
+    def on_parameters_changed(self, old: Any, new: Any) -> None:  # noqa: D102
+        # the projection was prepared for the old camera; the worker prepares it again
+        # before its next sample (not here: this runs on the caller's thread)
+        if old.camera != new.camera:
+            self._camera_changed = True
 
     def on_calibration(self, calibration: dict[str, Any]) -> None:  # noqa: D102
         super().on_calibration(calibration)
@@ -113,6 +120,10 @@ class ProjectToRgb(Processor):
         self.ctx.log.info("gaze.calibration_ready", camera=self.params.camera, size=self._size)
 
     def process(self, inputs: Inputs) -> Emit | None:  # noqa: D102
+        if self._camera_changed:
+            self._camera_changed = False
+            if self.ctx.calibration:
+                self.on_calibration(self.ctx.calibration)
         gaze = self._gaze(inputs)
         if gaze is None:
             return None

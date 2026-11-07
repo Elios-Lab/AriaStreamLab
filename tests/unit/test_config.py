@@ -223,3 +223,154 @@ def test_json_schema_mentions_streams_and_parameters() -> None:
     assert streams["imu"]["properties"]["rate_hz"]["default"] == 800
     assert streams["rgb"]["additionalProperties"] is False
     assert "processors" in schema["properties"]
+
+
+# --------------------------------------------------------------------------- review fixes
+
+
+@pytest.mark.parametrize(
+    ("stream", "params", "fragment"),
+    [
+        ("wifi_beacons", {"period_ms": "5000"}, "expected a number, got str"),
+        ("gps", {"rate_hz": True}, "expected a number, got bool"),
+        ("wifi_beacons", {"period_ms": float("nan")}, "not a finite number"),
+        ("wifi_beacons", {"period_ms": float("inf")}, "not a finite number"),
+        ("rgb", {"resolution": 2016}, "expected str, got int"),
+        ("rgb", {"fps": "10"}, "expected a number, got str"),
+    ],
+)
+def test_wrong_typed_stream_parameters_are_config_errors(
+    stream: str, params: dict[str, object], fragment: str
+) -> None:
+    # before: a TypeError traceback ("5000" < 1000) or silently accepted (true == 1, NaN)
+    with pytest.raises(ConfigError, match=fragment):
+        load_dict({"experiment": {"name": "t"}, "streams": {stream: params}})
+
+
+def test_numeric_parameters_still_accept_ints_and_floats() -> None:
+    cfg = load_dict(
+        {
+            "experiment": {"name": "t"},
+            "streams": {"wifi_beacons": {"period_ms": 2500.0}, "als": {"rate_hz": 10}},
+        }
+    )
+    assert cfg.enabled_streams()["wifi_beacons"]["period_ms"] == 2500.0
+
+
+def test_disabled_preset_group_lets_a_member_be_selected(tmp_path: Path) -> None:
+    parent = tmp_path / "base.json"
+    parent.write_text(json.dumps({"experiment": {"name": "b"}, "streams": {"slam": {"fps": 30}}}))
+    child = tmp_path / "child.json"
+    child.write_text(
+        json.dumps(
+            {
+                "extends": "base.json",
+                "experiment": {"name": "c"},
+                "streams": {"slam": {"enabled": False}, "slam_front_left": {}},
+            }
+        )
+    )
+    cfg = load_config(child)  # before: "'slam_front_left' is configured twice"
+    assert list(cfg.enabled_streams()) == ["slam_front_left"]
+    assert cfg.enabled_streams()["slam_front_left"]["fps"] == 10
+
+
+def test_disabled_member_is_left_out_of_an_enabled_group() -> None:
+    cfg = load_dict(
+        {
+            "experiment": {"name": "t"},
+            "streams": {"slam": {"fps": 30}, "slam_side_right": {"enabled": False}},
+        }
+    )
+    assert sorted(cfg.enabled_streams()) == [
+        "slam_front_left",
+        "slam_front_right",
+        "slam_side_left",
+    ]
+    assert {p["fps"] for p in cfg.enabled_streams().values()} == {30}
+
+
+def test_two_enabled_entries_for_one_stream_are_still_an_error() -> None:
+    with pytest.raises(ConfigError, match="configured twice"):
+        load_dict({"experiment": {"name": "t"}, "streams": {"slam": {}, "slam_side_left": {}}})
+
+
+def test_rgb_full_resolution_is_limited_to_10_fps() -> None:
+    with pytest.raises(ConfigError, match="2560x1920 is only available up to 10 fps"):
+        load_dict(
+            {
+                "experiment": {"name": "t"},
+                "streams": {"rgb": {"resolution": "2560x1920", "fps": 30}},
+            }
+        )
+    for fps in (5, 10):
+        load_dict(
+            {
+                "experiment": {"name": "t"},
+                "streams": {"rgb": {"resolution": "2560x1920", "fps": fps}},
+            }
+        )
+    load_dict({"experiment": {"name": "t"}, "streams": {"rgb": {"fps": 30}}})
+
+
+def test_custom_profile_needs_its_json() -> None:
+    # before: validated, then failed only when connecting to the glasses
+    with pytest.raises(ConfigError, match="custom_json is required"):
+        load_dict({"experiment": {"name": "t"}, "device": {"profile": {"mode": "custom"}}})
+
+
+def test_relative_paths_follow_the_file_that_declares_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shared = tmp_path / "shared"
+    (shared / "procs").mkdir(parents=True)
+    (shared / "base.json").write_text(
+        json.dumps(
+            {
+                "experiment": {"name": "b"},
+                "processors_path": "procs",
+                "device": {"profile": {"mode": "custom", "custom_json": "profile.json"}},
+            }
+        )
+    )
+    study = tmp_path / "study"
+    study.mkdir()
+    (study / "experiment.json").write_text(
+        json.dumps(
+            {
+                "extends": "../shared/base.json",
+                "experiment": {"name": "s"},
+                "storage": {"root": "./sessions"},
+            }
+        )
+    )
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)  # the CLI started from another directory
+    cfg = load_config(Path("../study/experiment.json"))
+    assert cfg.processors_path == (shared / "procs").resolve()  # before: study/procs
+    assert cfg.device.profile.custom_json == (shared / "profile.json").resolve()  # before: cwd
+    assert cfg.storage.root == (study / "sessions").resolve()  # before: elsewhere/sessions
+
+
+def test_a_child_path_overrides_and_anchors_to_the_child(tmp_path: Path) -> None:
+    (tmp_path / "base.json").write_text(
+        json.dumps({"experiment": {"name": "b"}, "storage": {"root": "parent_sessions"}})
+    )
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / "e.json").write_text(
+        json.dumps({"extends": "../base.json", "experiment": {"name": "c"}})
+    )
+    assert load_config(sub / "e.json").storage.root == (tmp_path / "parent_sessions").resolve()
+    (sub / "e.json").write_text(
+        json.dumps(
+            {"extends": "../base.json", "experiment": {"name": "c"}, "storage": {"root": "mine"}}
+        )
+    )
+    assert load_config(sub / "e.json").storage.root == (sub / "mine").resolve()
+
+
+def test_dict_configs_and_presets_keep_relative_paths() -> None:
+    assert load_dict({"experiment": {"name": "t"}}).storage.root == Path("sessions")
+    assert not load_preset("base").storage.root.is_absolute()

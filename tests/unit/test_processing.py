@@ -974,3 +974,104 @@ def test_queue_size_default_follows_the_primary_rate() -> None:
     assert graph.workers["m"].queue_size == 400
     assert graph.workers["r"].queue_size == 64
     assert graph.workers["d"].queue_size == 64
+
+
+# --------------------------------------------------------------------------- review fixes
+
+
+_PROC_SRC = (
+    "from ariastreamlab.processing import Emit, Inputs, Processor\n"
+    "class Tag(Processor):\n"
+    "    def process(self, inputs: Inputs):\n"
+    "        return Emit(self.ctx.outputs[0], {tag!r})\n"
+)
+
+
+def test_processor_files_with_one_name_in_two_folders_stay_apart(tmp_path: Path) -> None:
+    a, b = tmp_path / "a", tmp_path / "b"
+    for d, tag in ((a, "A"), (b, "B")):
+        d.mkdir()
+        (d / "tag.py").write_text(_PROC_SRC.format(tag=tag))
+    cls_a = resolve("tag", a)
+    cls_b = resolve("tag", b)  # before: the class from a/tag.py again
+    assert cls_a is not cls_b
+    assert cls_a.__module__ != cls_b.__module__
+    from ariastreamlab.processing.plugins import qualified_name
+
+    assert qualified_name(cls_b) == "ariastreamlab_user_processors.tag:Tag"  # as in manifests
+
+
+def test_an_edited_processor_file_is_imported_again(tmp_path: Path) -> None:
+    import os
+
+    f = tmp_path / "tag.py"
+    f.write_text(_PROC_SRC.format(tag="old"))
+    first = resolve("tag", tmp_path)
+    assert resolve("tag", tmp_path) is first  # unchanged file: the same class
+    f.write_text(_PROC_SRC.format(tag="new, longer"))
+    st = f.stat()
+    os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+    second = resolve("tag", tmp_path)  # before: the old class until the process restarted
+    assert second is not first
+    proc = second()
+    cfg = _cfg("t", "tag", ["imu_left"], ["o"])
+    proc.setup(_ctx(cfg))
+    assert proc.process(None).data == "new, longer"  # type: ignore[arg-type,union-attr]
+
+
+def test_a_configured_processors_folder_does_not_fall_back_to_the_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "stray.py").write_text(_PROC_SRC.format(tag="stray"))
+    monkeypatch.chdir(tmp_path)
+    procs = tmp_path / "processors"
+    procs.mkdir()
+    with pytest.raises(ProcessingError, match="not found in"):
+        resolve("stray", procs)
+    assert resolve("stray.py") is not None  # no folder configured: the cwd is the folder
+
+
+def test_downsample_follows_live_parameter_changes(bus: EventBus, provenance: Provenance) -> None:
+    from ariastreamlab.processing.builtin.generic import Downsample
+
+    cfg = _cfg("ds", "generic.downsample", ["imu_left"], ["o"], parameters={"rate_hz": 100})
+    out = bus.subscribe("derived.o", maxsize=10_000)
+    w = ProcessorWorker(cfg, Downsample(), _ctx(cfg, Downsample.Parameters(rate_hz=100)), bus)
+    w.start()
+
+    def feed(start: int, n: int) -> None:  # 800 Hz samples
+        for i in range(start, start + n):
+            s = Sample("d", "imu_left", i * 1_250_000, 0, i, float(i), provenance)
+            bus.publish("raw.imu_left", s)
+        _wait(lambda: w.stats().fired == start + n)
+
+    feed(0, 80)  # 0.1 s at 100 Hz: 10 outputs
+    assert len(out.drain()) == 10
+    w.update_parameters({"rate_hz": 10})
+    feed(80, 800)  # 1 s at 10 Hz: 10 outputs (before: still 100)
+    assert 9 <= len(out.drain()) <= 11
+    w.update_parameters({"rate_hz": None, "every": 100})
+    feed(880, 800)  # every 100th: 8 outputs (before: the rate path kept running)
+    assert len(out.drain()) == 8
+    w.stop()
+
+
+def test_gaze_projection_follows_a_live_camera_change(provenance: Provenance) -> None:
+    from ariastreamlab.processing.builtin.gaze import ProjectToRgb
+
+    calib = _fake_calibration()
+    other = dict(calib["cameras"]["camera-rgb"], image_size=[320, 240])
+    other["projection_params"] = [250.0, 160.0, 120.0] + [0.0] * 12
+    calib["cameras"]["camera-other"] = other
+    cfg = _cfg("g", "gaze.project_to_rgb", ["eye_gaze"], ["g"])
+    proc = ProjectToRgb()
+    ctx = _ctx(cfg, ProjectToRgb.Parameters(), calibration=calib)
+    w = ProcessorWorker(cfg, proc, ctx, EventBus())
+    proc.setup(ctx)
+    gaze = GazePayload(0.0, 0.0, 1.0, True, 0, 0, 0, 0)
+    s = Sample("d", "eye_gaze", 0, 0, 0, gaze, provenance)
+    inputs = Inputs("eye_gaze", {"eye_gaze": s})
+    assert proc.process(inputs).data["x"] == 320.0  # type: ignore[union-attr]
+    w.update_parameters({"camera": "camera-other"})
+    out = proc.process(inputs)  # before: still projected into camera-rgb
+    assert out is not None and out.data["x"] == 160.0 and out.data["y"] == 120.0

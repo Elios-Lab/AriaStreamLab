@@ -394,3 +394,30 @@ def test_vrs_replay_keeps_record_indices_after_a_seek(monkeypatch: pytest.Monkey
     after_seek = list(src._iter_from(ts[7]))
     assert after_seek[0].device_timestamp_ns == ts[7]
     assert [s.sequence_number for s in after_seek] == list(range(7, 20))
+
+
+@pytest.mark.parametrize("frozen_root", ["./sessions", "/nonexistent/other_computer/sessions"])
+def test_replay_of_a_session_is_written_next_to_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frozen_root: str
+) -> None:
+    import json
+
+    root = _mock_session(tmp_path)
+    # a session recorded before 0.2.5 from the CLI froze a relative root; a session copied
+    # from another computer froze that computer's path
+    frozen = root / "experiment.json"
+    data = json.loads(frozen.read_text())
+    data["storage"]["root"] = frozen_root
+    frozen.chmod(0o644)  # sessions freeze it read-only
+    frozen.write_text(json.dumps(data))
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    rep = Experiment.replay(root, speed=0.0)
+    with rep:
+        rep.run()
+        new_root = rep.session_dir
+    assert new_root is not None
+    # before: <cwd>/sessions, <session>/sessions (inside the recording) or the other path
+    assert new_root.parent == root.parent
+    assert not (root / "sessions").exists()

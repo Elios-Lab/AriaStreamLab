@@ -45,7 +45,7 @@ class ResolvedProcessor:
         return {
             "id": self.cfg.id,
             "type": self.cfg.type,
-            "class": f"{self.cls.__module__}:{self.cls.__qualname__}",
+            "class": plugins.qualified_name(self.cls),
             "version": self.cls.version,
             "inputs": list(self.cfg.inputs),
             "outputs": list(self.cfg.outputs),
@@ -238,7 +238,7 @@ class ProcessingGraph:
                 info[sid] = {
                     "processor": r.cfg.id,
                     "type": r.cfg.type,
-                    "class": f"{r.cls.__module__}:{r.cls.__qualname__}",
+                    "class": plugins.qualified_name(r.cls),
                     "version": r.cls.version,
                     "parameters": r.parameters_dict,
                     "inputs": list(r.cfg.inputs),

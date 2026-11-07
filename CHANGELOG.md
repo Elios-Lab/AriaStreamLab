@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased
+
+- Relative paths in an experiment file are relative to that file, whatever directory the
+  command starts from: `storage.root` (before, `ariastreamlab run` resolved it against the
+  current directory while the application used the file's folder, so the Sessions page did
+  not list sessions recorded with `run` from elsewhere), `device.profile.custom_json`
+  (before, the current directory) and, in a file reached through `extends`, its own
+  `processors_path` and paths (before, the child's folder). `ariastreamlab run
+  examples/mock_experiment.json` now writes to `examples/sessions/`.
+- Replaying a recorded session writes the new session next to it; the frozen
+  `storage.root` of an older session recorded with `run` (relative) pointed inside the
+  recording, and that of a copied session at the other computer's disk.
+- Stream parameters of the wrong type are configuration errors naming the key instead of a
+  traceback (`"period_ms": "5000"`), and `true` or `NaN` are no longer accepted as numbers
+  (`"rate_hz": true` passed as 1).
+- A disabled stream entry switches its streams off instead of clashing with a group:
+  `"slam": {"enabled": false}` and `"slam_front_left": {}` selects one camera of a preset's
+  SLAM group (before: "configured twice"), and `"slam_side_right": {"enabled": false}` next
+  to an enabled `slam` streams the other three.
+- `rgb` at 2560x1920 above 10 fps is refused when the file is checked (the limit was only
+  written in the description), and `device.profile.mode: "custom"` without `custom_json`
+  likewise (before: at connect time, with the glasses on).
+- Processor files are cached by path and reloaded when they change: two experiments with
+  their own `processors/filter.py` in one application each get their own class, and an
+  edited file is used by the next run without restarting. A configured `processors_path`
+  no longer falls back to a file of the same name in the current directory. Manifests
+  name the class as before.
+- `generic.downsample` follows live parameter changes (the manifest recorded them but the
+  old rate stayed in force), and `gaze.project_to_rgb` re-prepares its projection when its
+  `camera` is changed live.
+
 ## 0.2.4 — 2026-11-06
 
 - Lossless processing (max-speed replay, non-realtime mock) is now lossless and

@@ -12,6 +12,7 @@ and the custom-profile template.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
@@ -58,23 +59,43 @@ class ParameterSpec:
     profile_field: str | None = None
     description: str = ""
 
+    @property
+    def numeric(self) -> bool:
+        """True when the parameter is a number (bounds, or numeric choices)."""
+        if self.minimum is not None or self.maximum is not None:
+            return True
+        values = self.choices if self.choices is not None else (self.default,)
+        return all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in values)
+
     def validate(self, value: Any, stream_id: str) -> Any:
         """Return ``value`` if allowed, else raise a readable :class:`RegistryError`."""
+        where = f"streams.{stream_id}.{self.name}"
+        if self.numeric:
+            # a JSON string ("5000") or boolean (true == 1 in Python) is not a number, and
+            # NaN compares false with every bound, so all three would slip through below
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise RegistryError(
+                    f"{where}: expected a number, got {type(value).__name__} {value!r}",
+                    hint=self.description or None,
+                )
+            if not math.isfinite(value):
+                raise RegistryError(f"{where}: {value!r} is not a finite number")
+        elif not isinstance(value, type(self.default)):
+            raise RegistryError(
+                f"{where}: expected {type(self.default).__name__}, got "
+                f"{type(value).__name__} {value!r}",
+                hint=self.description or None,
+            )
         if self.choices is not None and value not in self.choices:
             allowed = ", ".join(repr(c) for c in self.choices)
             raise RegistryError(
-                f"streams.{stream_id}.{self.name}: {value!r} is not supported by Aria Gen 2 "
-                f"(allowed: {allowed})",
+                f"{where}: {value!r} is not supported by Aria Gen 2 (allowed: {allowed})",
                 hint=self.description or None,
             )
         if self.minimum is not None and value < self.minimum:
-            raise RegistryError(
-                f"streams.{stream_id}.{self.name}: {value!r} is below the minimum {self.minimum}"
-            )
+            raise RegistryError(f"{where}: {value!r} is below the minimum {self.minimum}")
         if self.maximum is not None and value > self.maximum:
-            raise RegistryError(
-                f"streams.{stream_id}.{self.name}: {value!r} is above the maximum {self.maximum}"
-            )
+            raise RegistryError(f"{where}: {value!r} is above the maximum {self.maximum}")
         return value
 
 
