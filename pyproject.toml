@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ariastreamlab"
-version = "0.2.4"
+version = "0.2.5"
 description = "Experiment-oriented framework for Meta Project Aria Gen 2 glasses: acquisition, realtime processing, storage, replay and monitoring."
 readme = "README.md"
 license = "MIT"

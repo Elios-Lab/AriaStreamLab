@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.5 — 2026-11-07
 
 - Relative paths in an experiment file are relative to that file, whatever directory the
   command starts from: `storage.root` (before, `ariastreamlab run` resolved it against the
