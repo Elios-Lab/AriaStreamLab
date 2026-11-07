@@ -260,18 +260,21 @@ def test_sdk_replay_stop_waits_for_the_callbacks_to_go_quiet(
     from ariastreamlab.timing.clock import HostClock
 
     clock = HostClock()
-    binder = types.SimpleNamespace(last_host_ns=clock.now_ns(), _clock=clock)  # replaying
-    still_firing = threading.Event()
 
-    def sdk_threads() -> None:  # the SDK's dispatch threads, still in callbacks after stop()
-        still_firing.wait(2)
-        for _ in range(8):
-            binder.last_host_ns = clock.now_ns()
-            time.sleep(0.05)
+    class Binder:  # the SDK's dispatch threads go on firing for 0.4 s after stop()
+        _clock = clock
+        firing_until: int | None = None
+
+        @property
+        def last_host_ns(self) -> int:
+            now = clock.now_ns()
+            return now if self.firing_until is None else min(now, self.firing_until)
+
+    binder = Binder()
 
     class Session:
         def stop(self) -> None:
-            still_firing.set()
+            binder.firing_until = clock.now_ns() + int(0.4e9)
 
     released: list[int] = []
     handler = types.SimpleNamespace(clear_callbacks=lambda: released.append(clock.now_ns()))
@@ -279,9 +282,8 @@ def test_sdk_replay_stop_waits_for_the_callbacks_to_go_quiet(
     src._stop, src._watch = threading.Event(), None
     src._session, src._handler, src._binder = Session(), handler, binder
     monkeypatch.setattr(SdkReplaySource, "_STOP_QUIET_S", 0.2)
-    t = threading.Thread(target=sdk_threads)
-    t.start()
     src.stop()
-    t.join()
-    assert released and released[0] - binder.last_host_ns >= int(0.2e9)
+    assert binder.firing_until is not None
+    # released only once the callbacks had been quiet for 0.2 s (before: at once)
+    assert released and released[0] - binder.firing_until >= int(0.2e9)
     assert src.finished.is_set()
