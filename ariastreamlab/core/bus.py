@@ -120,6 +120,10 @@ class Subscription(Generic[T]):
             self._not_full.notify_all()
             return items
 
+    def __bool__(self) -> bool:
+        """A subscription is always truthy (``__len__`` alone made an empty one falsy)."""
+        return True
+
     def __len__(self) -> int:
         return len(self._queue)
 
@@ -181,6 +185,8 @@ class EventBus:
         self._cache: dict[str, tuple[Subscription[Any], ...]] = {}
         self._topics: dict[str, int] = {}
         self.published = 0
+        self._count_lock = threading.Lock()
+        """Guards the publish counters: ``+=`` from many publisher threads lost increments."""
 
     def subscribe(
         self,
@@ -204,16 +210,18 @@ class EventBus:
             with self._lock:
                 subs = tuple(s for s in self._subs if fnmatch.fnmatchcase(topic, s.pattern))
                 self._cache[topic] = subs
-                self._topics[topic] = self._topics.get(topic, 0)
-        self.published += 1
-        self._topics[topic] = self._topics.get(topic, 0) + 1
+                with self._count_lock:
+                    self._topics.setdefault(topic, 0)
+        with self._count_lock:
+            self.published += 1
+            self._topics[topic] = self._topics.get(topic, 0) + 1
         for sub in subs:
             sub._offer(item)
         return len(subs)
 
     def topics(self) -> dict[str, int]:
         """Topics seen so far with their publish counts."""
-        with self._lock:
+        with self._count_lock:
             return dict(self._topics)
 
     def subscriptions(self) -> Iterable[Subscription[Any]]:

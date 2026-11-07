@@ -21,8 +21,9 @@ def timedelta_to_ns(td: timedelta) -> int:
 
 
 def ns_to_timedelta(ns: int) -> timedelta:
-    """Inverse of :func:`timedelta_to_ns` (sub-microsecond part is truncated)."""
-    return timedelta(microseconds=ns // NS_PER_US)
+    """Inverse of :func:`timedelta_to_ns` (sub-microsecond part is truncated toward zero)."""
+    us = abs(ns) // NS_PER_US  # ``ns // 1000`` floors: -1500 ns would become -2 µs
+    return timedelta(microseconds=us if ns >= 0 else -us)
 
 
 def ms_to_ns(ms: int) -> int:

@@ -140,7 +140,21 @@ def load_dict(
         cfg = ExperimentConfig.model_validate(resolved)
     except ValidationError as exc:
         raise format_validation_error(exc, source) from None
-    return _anchor_processors_path(cfg, base_dir)
+    return _anchor_default_root(_anchor_processors_path(cfg, base_dir), base_dir)
+
+
+def _anchor_default_root(cfg: ExperimentConfig, base_dir: Path | None) -> ExperimentConfig:
+    """The default ``storage.root`` (``./sessions``) is next to the file too, like a written one.
+
+    :func:`anchor_paths` only sees the values a file spells out: without this a file with no
+    ``storage`` section recorded into the current directory, and saving a file from the
+    designer (which leaves out default values) moved its sessions.
+    """
+    root = cfg.storage.root
+    if base_dir is None or root.expanduser().is_absolute():
+        return cfg
+    storage = cfg.storage.model_copy(update={"root": (base_dir / root).resolve()})
+    return cfg.model_copy(update={"storage": storage})
 
 
 def _anchor_processors_path(cfg: ExperimentConfig, base_dir: Path | None) -> ExperimentConfig:

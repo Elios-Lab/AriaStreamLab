@@ -470,7 +470,10 @@ def build_design_page(dash: Any, ui: Any) -> None:
                 plan_md = ui.markdown("").classes("text-xs")
             with ui.card().classes("w-full p-3"):
                 with ui.row().classes("items-end gap-2 w-full"):
-                    save_path = ui.input("save as", value="experiment.json").classes("grow")
+                    default_name = (
+                        designer.path.name if designer.path is not None else "experiment.json"
+                    )
+                    save_path = ui.input("save as", value=default_name).classes("grow")
 
                     async def _save_as() -> None:
                         current = Path(str(save_path.value or "experiment.json"))
@@ -481,29 +484,49 @@ def build_design_page(dash: Any, ui: Any) -> None:
                             ),
                             filename=current.name,
                         )
-                        if chosen:
+                        if chosen:  # the system dialog has already asked about overwriting
                             save_path.value = chosen
-                            _save()
+                            _save(confirmed=True)
 
                     if in_native_window():
                         ui.button(icon="folder_open", on_click=_save_as).props(
                             "flat dense"
                         ).tooltip("choose where to save")
 
-                    def _save() -> None:
+                    def _overwrite() -> None:
+                        overwrite_dialog.close()
+                        _save(confirmed=True)
+
+                    with ui.dialog() as overwrite_dialog, ui.card():
+                        overwrite_text = ui.markdown("")
+                        with ui.row():
+                            ui.button("overwrite", color="red", on_click=_overwrite)
+                            ui.button("cancel", on_click=overwrite_dialog.close).props("flat")
+
+                    def _save(confirmed: bool = False) -> None:
                         rep = designer.validate()
                         if not rep.ok:
                             ui.notify("fix the problems first", type="warning")
                             return
+                        name = str(save_path.value or default_name)
+                        target = designer.target(name)
+                        if not confirmed and target.exists() and target != designer.path:
+                            # saving over the file that was opened is a save; any other
+                            # existing file is someone else's experiment
+                            overwrite_text.content = (
+                                f"**{target.name}** already exists:  \n`{target}`"
+                            )
+                            overwrite_dialog.open()
+                            return
                         try:
-                            p = designer.save(str(save_path.value or "experiment.json"))
+                            p = designer.save(name)
                         except OSError as exc:
                             ui.notify(f"cannot write: {exc}", type="negative")
                             return
                         ui.notify(f"saved {p}", type="positive")
                         dash.last_saved = p
 
-                    ui.button("save", on_click=_save, icon="save")
+                    ui.button("save", on_click=lambda: _save(), icon="save")
                 ui.label(f"relative paths are under {designer.base_dir}").classes(
                     "text-xs opacity-60"
                 )

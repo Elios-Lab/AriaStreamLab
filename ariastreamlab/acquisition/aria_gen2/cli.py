@@ -34,6 +34,16 @@ BANDWIDTH_FLAGS = {
 }
 
 
+_NOT_AUTHENTICATED = re.compile(r"\b(?:not|un)[\s-]*authenticated\b|\bauthentication failed\b")
+_AUTHENTICATED = re.compile(r"\bauthenticated\b")
+
+
+def is_authenticated(text: str) -> bool:
+    """``auth check`` output says the laptop is paired ("unauthenticated" is not a yes)."""
+    low = text.lower()
+    return bool(_AUTHENTICATED.search(low)) and not _NOT_AUTHENTICATED.search(low)
+
+
 def strip_ansi(text: str) -> str:
     """Remove terminal colour codes (the CLI colours its output even when piped)."""
     return _ANSI.sub("", text)
@@ -116,11 +126,21 @@ class AriaCli:
         t0 = time.monotonic()
         try:
             proc = subprocess.run(
-                argv, capture_output=True, text=True, timeout=timeout_s or self.timeout_s
+                argv,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",  # a stray byte in the CLI's output is not a failure
+                timeout=timeout_s or self.timeout_s,
             )
         except subprocess.TimeoutExpired as exc:
             raise DeviceError(
                 f"`{' '.join(argv[1:])}` did not finish within {timeout_s or self.timeout_s:g} s"
+            ) from exc
+        except OSError as exc:  # not installed, not executable, removed since start-up
+            raise DeviceError(
+                f"cannot run `{argv[0]}`: {exc}",
+                hint="is Meta's client SDK installed in this environment? see the Setup page",
             ) from exc
         res = CliResult(
             tuple(argv[1:]),
@@ -184,11 +204,7 @@ class AriaCli:
     def auth_check(self, *, ble: bool = False) -> bool:
         """``auth check``: True when the device reports the laptop as authenticated."""
         res = self.run("auth check", ble=ble)
-        return (
-            res.ok
-            and "authenticated" in res.text.lower()
-            and "not authenticated" not in (res.text.lower())
-        )
+        return res.ok and is_authenticated(res.text)
 
     def device_list(self, *, ble_scan: bool = False) -> CliResult:
         """``device list`` (with ``--ble-scan`` to probe paired BLE devices in range)."""

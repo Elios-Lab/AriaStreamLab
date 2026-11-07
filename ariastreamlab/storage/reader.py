@@ -16,9 +16,12 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 from ariastreamlab.core.errors import StorageError
+from ariastreamlab.core.logging import get_logger
 from ariastreamlab.core.sample import DerivedSample, Provenance, Sample
 from ariastreamlab.events.markers import Event, Interval, pair_intervals
 from ariastreamlab.storage.layout import SessionLayout
@@ -48,12 +51,17 @@ class StoredStream:
         return str(self.meta.get("format", "parquet"))
 
 
+log = get_logger("ariastreamlab.storage.reader")
+
+
 class SessionReader:
     """Random/sequential access to a stored session."""
 
     def __init__(self, root: Path | str) -> None:
         self.layout = SessionLayout.open_existing(root)
         self.manifest = Manifest.load(self.layout.manifest)
+        self.read_errors: list[str] = []
+        """Chunk files that could not be read (their samples are missing from the iteration)."""
         self._streams: dict[str, StoredStream] = {}
         for sid, kind, d in stream_directories(self.layout):
             meta_path = d / "_meta.json"
@@ -185,19 +193,46 @@ class SessionReader:
             prov,
         )
 
-    def _iter_parquet(
-        self, st: StoredStream, start_ns: int | None, end_ns: int | None
-    ) -> Iterator[Sample | DerivedSample]:
-        for part in sorted(st.directory.glob("part-*.parquet")):
+    def _tables(self, st: StoredStream, pattern: str) -> Iterator[pa.Table]:
+        """The stream's chunk files in order; an unreadable one is recorded and skipped."""
+        for part in sorted(st.directory.glob(pattern)):
             try:
-                table = pq.read_table(part)
-            except Exception:
-                continue
+                yield pq.read_table(part)
+            except Exception as exc:
+                msg = f"{st.stream_id}: {part.name} could not be read ({type(exc).__name__}: {exc})"
+                self.read_errors.append(msg)
+                log.warning("reader.chunk_unreadable", stream=st.stream_id, file=part.name)
+
+    def _rows(
+        self, st: StoredStream, pattern: str, start_ns: int | None, end_ns: int | None
+    ) -> Iterator[dict[str, Any]]:
+        """Rows of every chunk in device-time order, across chunk boundaries too.
+
+        Each chunk is sorted, but samples reach the recorder out of order, so a chunk may
+        start before the previous one ends. The rows of a chunk are held back until the next
+        chunk's first timestamp is known: memory stays at about two chunks.
+        """
+        heap: list[tuple[int, int, dict[str, Any]]] = []
+        n = 0
+        for table in self._tables(st, pattern):
+            if table.num_rows:
+                first = pc.min(table.column("device_timestamp_ns")).as_py()
+                while heap and heap[0][0] < first:
+                    yield heapq.heappop(heap)[2]
             for row in table.to_pylist():
                 ts = int(row["device_timestamp_ns"])
                 if (start_ns is not None and ts < start_ns) or (end_ns is not None and ts > end_ns):
                     continue
-                yield self._make(st, row, row_to_payload(row, st.payload))
+                heapq.heappush(heap, (ts, n, row))  # n keeps the stored order of equal times
+                n += 1
+        while heap:
+            yield heapq.heappop(heap)[2]
+
+    def _iter_parquet(
+        self, st: StoredStream, start_ns: int | None, end_ns: int | None
+    ) -> Iterator[Sample | DerivedSample]:
+        for row in self._rows(st, "part-*.parquet", start_ns, end_ns):
+            yield self._make(st, row, row_to_payload(row, st.payload))
 
     def _iter_images(
         self, st: StoredStream, start_ns: int | None, end_ns: int | None, load: bool
@@ -205,15 +240,9 @@ class SessionReader:
         import cv2
 
         video_cache: dict[str, Any] = {}
-        for part in sorted(st.directory.glob("frames-*.parquet")):
-            try:
-                table = pq.read_table(part)
-            except Exception:
-                continue
-            for row in table.to_pylist():
-                ts = int(row["device_timestamp_ns"])
-                if (start_ns is not None and ts < start_ns) or (end_ns is not None and ts > end_ns):
-                    continue
+        next_frame: dict[str, int] = {}  # where each capture is: seek only when it is not there
+        try:
+            for row in self._rows(st, "frames-*.parquet", start_ns, end_ns):
                 data: Any = None
                 if load:
                     path = st.directory / row["file"]
@@ -221,8 +250,12 @@ class SessionReader:
                         cap = video_cache.get(row["file"])
                         if cap is None:
                             cap = video_cache[row["file"]] = cv2.VideoCapture(str(path))
-                        cap.set(cv2.CAP_PROP_POS_FRAMES, int(row["frame_index"]))
+                            next_frame[row["file"]] = 0
+                        index = int(row["frame_index"])
+                        if next_frame[row["file"]] != index:  # a seek decodes from a keyframe
+                            cap.set(cv2.CAP_PROP_POS_FRAMES, index)
                         ok, frame = cap.read()
+                        next_frame[row["file"]] = index + 1 if ok else -1
                         if not ok:
                             continue
                         data = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB) if frame.ndim == 3 else frame
@@ -232,8 +265,9 @@ class SessionReader:
                             continue
                         data = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB) if frame.ndim == 3 else frame
                 yield self._make(st, row, data)
-        for cap in video_cache.values():
-            cap.release()
+        finally:
+            for cap in video_cache.values():
+                cap.release()
 
 
 def _infer_meta(directory: Path) -> dict[str, Any]:

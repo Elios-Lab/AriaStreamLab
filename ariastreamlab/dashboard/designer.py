@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import enum
 import json
+import os
 import types
 import typing
 from collections.abc import Mapping
@@ -22,9 +23,9 @@ from typing import Any, Literal
 from pydantic import BaseModel
 
 from ariastreamlab.acquisition.base import StreamingPlan
-from ariastreamlab.config.loader import load_dict, preset_names, resolve_extends
+from ariastreamlab.config.loader import PATH_FIELDS, load_dict, preset_names, resolve_extends
 from ariastreamlab.config.models import ExecutionConfig, ExperimentConfig, ProcessorConfig
-from ariastreamlab.core.errors import AriaStreamLabError
+from ariastreamlab.core.errors import AriaStreamLabError, ConfigError
 from ariastreamlab.core.registry import REGISTRY, ParameterSpec, StreamDescriptor
 
 __all__ = ["Designer", "FieldSpec", "ProcessorEntry", "Report", "StreamEntry", "fields_of"]
@@ -241,6 +242,9 @@ class Designer:
         self.base_dir = (base_dir or Path.cwd()).resolve()
         data = dict(doc or {"extends": "preset:base", "experiment": {"name": "my_experiment"}})
         self.preset = str(data.get("extends") or "")
+        """The document's ``extends`` (a preset or a file), kept when it is saved."""
+        self.path: Path | None = None
+        """The file it was loaded from (``None`` for a new experiment)."""
         self.doc: dict[str, Any] = self._full(resolve_extends(data, self.base_dir))
         self._catalogue: list[ProcessorEntry] | None = None
 
@@ -252,9 +256,30 @@ class Designer:
 
     @classmethod
     def from_file(cls, path: str | Path) -> Designer:
-        """Load an existing experiment file."""
-        p = Path(path).resolve()
-        return cls(json.loads(p.read_text(encoding="utf-8")), base_dir=p.parent)
+        """Load an existing experiment file (a :class:`ConfigError` when it cannot be)."""
+        p = Path(path).expanduser().resolve()
+        try:
+            text = p.read_text(encoding="utf-8")
+        except FileNotFoundError as exc:
+            raise ConfigError(
+                f"no experiment file at {p}",
+                hint="check the path, or run `ariastreamlab design` alone for a blank experiment",
+            ) from exc
+        except (OSError, UnicodeDecodeError) as exc:
+            raise ConfigError(f"cannot read {p}: {exc}") from exc
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ConfigError(
+                f"{p} is not valid JSON: {exc.msg} (line {exc.lineno}, column {exc.colno})"
+            ) from exc
+        if not isinstance(data, dict):
+            raise ConfigError(
+                f"{p}: an experiment file is a JSON object, not {type(data).__name__}"
+            )
+        designer = cls(data, base_dir=p.parent)
+        designer.path = p
+        return designer
 
     @staticmethod
     def presets() -> tuple[str, ...]:  # noqa: D102
@@ -512,17 +537,110 @@ class Designer:
     def to_json(self, compact: bool = True) -> str:  # noqa: D102
         return json.dumps(self.to_dict(compact), indent=2, ensure_ascii=False)
 
+    def target(self, path: str | Path) -> Path:
+        """Where :meth:`save` writes ``path`` (relative paths are under ``base_dir``)."""
+        p = Path(path).expanduser()
+        return (p if p.is_absolute() else self.base_dir / p).resolve()
+
     def save(self, path: str | Path) -> Path:
-        """Write the compact document to ``path`` (relative to ``base_dir``)."""
-        p = Path(path)
-        if not p.is_absolute():
-            p = self.base_dir / p
+        """Write the compact document to ``path`` (relative to ``base_dir``).
+
+        The document's ``extends`` is kept, with only what differs from its parent, when
+        that file describes the same experiment (otherwise the full document is written).
+        Saved into another folder, relative paths are rewritten to point where they did.
+        """
+        p = self.target(path)
+        doc = self._layered() or self.to_dict(compact=True)
+        doc = _rebase_paths(doc, self.base_dir, p.parent)
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(self.to_json(compact=True) + "\n", encoding="utf-8")
+        p.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        self.path = p
         return p
+
+    def _layered(self) -> dict[str, Any] | None:
+        """``{"extends": …, <what differs from the parent>}``; ``None`` when it cannot be."""
+        if not self.preset:
+            return None
+        flat = self.to_dict(compact=True)
+        try:
+            parent = self._full(resolve_extends({"extends": self.preset}, self.base_dir))
+            want = load_dict(dict(flat), base_dir=self.base_dir)
+        except Exception:
+            return None
+        diff = _diff(self.doc, parent)
+        diff.pop("schema_version", None)
+        out: dict[str, Any] = {"extends": self.preset, "schema_version": flat["schema_version"]}
+        out["experiment"] = {"name": self.doc["experiment"]["name"], **diff.pop("experiment", {})}
+        streams = diff.pop("streams", {})
+        compact_streams = flat.get("streams", {})
+        for sid, entry in streams.items():  # new streams in their compact form
+            streams[sid] = (
+                compact_streams.get(sid, entry) if sid not in parent["streams"] else entry
+            )
+        for sid in parent.get("streams", {}):
+            if sid not in self.doc.get("streams", {}):
+                streams[sid] = {"enabled": False}  # removed here, present in the parent
+        if streams:
+            out["streams"] = streams
+        if "processors" in diff:
+            diff["processors"] = flat.get("processors", [])
+        out.update(diff)
+        try:
+            got = load_dict(dict(out), base_dir=self.base_dir)
+        except Exception:
+            return None
+        return out if _same_experiment(got, want) else None
 
 
 # ----------------------------------------------------------------------------- helpers
+def _diff(child: Mapping[str, Any], parent: Mapping[str, Any]) -> dict[str, Any]:
+    """The entries of ``child`` that differ from ``parent`` (nested dicts recursively)."""
+    out: dict[str, Any] = {}
+    for k, v in child.items():
+        pv = parent.get(k, _MISSING)
+        if isinstance(v, dict) and isinstance(pv, dict):
+            d = _diff(v, pv)
+            if d:
+                out[k] = d
+        elif v != pv:
+            out[k] = v
+    return out
+
+
+_MISSING = object()
+
+
+def _same_experiment(a: ExperimentConfig, b: ExperimentConfig) -> bool:
+    """Same configuration, a stream switched off counting as one left out."""
+    da = a.model_dump(mode="json", exclude={"streams"})
+    db = b.model_dump(mode="json", exclude={"streams"})
+    return da == db and a.enabled_streams() == b.enabled_streams()
+
+
+def _rebase_paths(doc: dict[str, Any], old: Path, new: Path) -> dict[str, Any]:
+    """Relative path settings (and a file ``extends``) of ``doc`` moved from ``old`` to ``new``."""
+    old, new = old.resolve(), new.resolve()
+    if old == new:
+        return doc
+    out: dict[str, Any] = json.loads(json.dumps(doc))
+
+    def moved(value: Any) -> Any:
+        if not isinstance(value, str) or not value or Path(value).expanduser().is_absolute():
+            return value
+        return os.path.relpath(old / value, new)
+
+    for keys in PATH_FIELDS:
+        node: Any = out
+        for k in keys[:-1]:
+            node = node.get(k) if isinstance(node, dict) else None
+        if isinstance(node, dict) and keys[-1] in node:
+            node[keys[-1]] = moved(node[keys[-1]])
+    ext = out.get("extends")
+    if isinstance(ext, str) and not ext.startswith("preset:"):
+        out["extends"] = moved(ext)
+    return out
+
+
 def _full_processor(p: Mapping[str, Any]) -> dict[str, Any]:
     """A processor entry with every key present (defaults filled in)."""
     out = {

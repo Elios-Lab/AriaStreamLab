@@ -67,8 +67,33 @@ def write_table_atomic(path: Path, table: pa.Table) -> int:
     """Write a Parquet file atomically; returns the number of bytes written."""
     tmp = path.with_name(path.name + ".tmp")
     pq.write_table(table, tmp, compression="zstd")
+    fsync_file(tmp)  # the rename must not reach the disk before the data does
     os.replace(tmp, path)
+    fsync_dir(path.parent)
     return path.stat().st_size
+
+
+def fsync_file(path: Path) -> None:
+    """Flush a written file's data to the disk."""
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def fsync_dir(directory: Path) -> None:
+    """Make a rename in ``directory`` durable (a no-op where a directory cannot be opened)."""
+    try:
+        fd = os.open(directory, os.O_RDONLY)
+    except OSError:  # Windows
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
 
 
 class StreamWriter(ABC):

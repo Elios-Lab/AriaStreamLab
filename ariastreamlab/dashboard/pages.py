@@ -187,6 +187,7 @@ def build_sessions_page(dash: Any, ui: Any) -> None:
                     ui.button("stop current run", icon="stop", on_click=dash.stop_run).props(
                         "flat color=red"
                     )
+                    # ask_delete is defined further down: look it up at click time
                     ui.button("delete", icon="delete", on_click=lambda: ask_delete()).props(
                         "flat color=red"
                     ).tooltip("remove this session directory from disk (asks first)")
@@ -280,12 +281,21 @@ def build_sessions_page(dash: Any, ui: Any) -> None:
             ui.button("delete permanently", color="red", on_click=_confirm_delete)
             ui.button("cancel", on_click=delete_dialog.close).props("flat")
 
-    def ask_delete() -> None:
+    async def _details(path: Path) -> Any:
+        # measuring a large session walks every file: off the event loop, or the whole
+        # interface (every page, every client) freezes until it is done
+        from nicegui import run
+
+        return await run.io_bound(session_details, path)
+
+    async def ask_delete() -> None:
         p = selected["path"]
         if p is None:
             ui.notify("select a session first", type="warning")
             return
-        d = session_details(p)
+        d = await _details(p)
+        if selected["path"] != p:  # another session was selected meanwhile
+            return
         delete_text.content = (
             f"Delete **{p.name}** ({d.size_text}, {len(d.raw_files)} raw file(s))?  \n"
             f"`{p}`  \n\nThe directory is removed from disk. This cannot be undone."
@@ -299,9 +309,12 @@ def build_sessions_page(dash: Any, ui: Any) -> None:
         table.update()
         count_label.text = f"{len(rows)} session(s) under {root}"
 
-    def show(path: Path) -> None:
+    async def show(path: Path) -> None:
         selected["path"] = path
-        d = session_details(path)
+        detail_title.text = f"{path.name} (loading…)"
+        d = await _details(path)
+        if selected["path"] != path:  # a later click won: do not overwrite it
+            return
         m = d.manifest
         detail_title.text = path.name
         detail_meta.content = (
@@ -318,19 +331,19 @@ def build_sessions_page(dash: Any, ui: Any) -> None:
         intervals_table.update()
         problems_md.content = "\n".join(f"- {p}" for p in d.problems)
 
-    def _selected(e: Any) -> None:
+    async def _selected(e: Any) -> None:
         sel = e.selection or []
         if sel:
-            show(Path(sel[0]["path"]))
+            await show(Path(sel[0]["path"]))
 
     table.on_select(_selected)
 
-    def _row_click(e: Any) -> None:  # a click anywhere on the row selects it
+    async def _row_click(e: Any) -> None:  # a click anywhere on the row selects it
         args = e.args if isinstance(e.args, list) else []
         row = args[1] if len(args) > 1 and isinstance(args[1], dict) else None
         if row and row.get("path"):
             table.selected = [row]
-            show(Path(row["path"]))
+            await show(Path(row["path"]))
 
     table.on("rowClick", _row_click)
     reload()

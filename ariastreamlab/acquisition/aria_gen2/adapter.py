@@ -110,6 +110,7 @@ class AriaGen2Source(Source):
         self._server: Any = None
         self._time_sync: Any = None
         self._raw_messages: Counter[str] = Counter()
+        self._raw_lock = threading.Lock()  # the raw callback fires on many SDK threads
         self._monitor: threading.Thread | None = None
         self._stop = threading.Event()
         self._started = False
@@ -234,7 +235,7 @@ class AriaGen2Source(Source):
             "interface": self.plan.interface,
             "batch_period_ms": self.plan.batch_period_ms,
             "callback_errors": dict(binder.errors) if binder is not None else {},
-            "raw_messages": dict(self._raw_messages),
+            "raw_messages": self._raw_counts(),
             "sdk_queues": self._queue_sizes(),
             "ticsync": dict(self._last_ticsync),
             "warnings": list(self.warnings),
@@ -266,6 +267,10 @@ class AriaGen2Source(Source):
             self.manager.disconnect()
         except Exception:
             log.debug("live.disconnect_failed", exc_info=True)
+
+    def _raw_counts(self) -> dict[str, int]:
+        with self._raw_lock:
+            return dict(self._raw_messages)
 
     # -- manifest helpers --------------------------------------------------------------
     def device_record(self) -> dict[str, Any]:
@@ -349,7 +354,9 @@ class AriaGen2Source(Source):
 
     def _raw_message(self, message: Any, *_: Any) -> None:
         with contextlib.suppress(Exception):  # never let a counter break an SDK thread
-            self._raw_messages[str(getattr(message, "id", "?")).rsplit(".", 1)[-1]] += 1
+            key = str(getattr(message, "id", "?")).rsplit(".", 1)[-1]
+            with self._raw_lock:
+                self._raw_messages[key] += 1
 
     def _teardown_receiver(self) -> None:
         self._last_queues = self._queue_sizes()

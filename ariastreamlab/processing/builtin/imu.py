@@ -37,9 +37,10 @@ class Lowpass(Processor):
 
     ``cutoff_hz`` is turned into the EMA coefficient from the measured sample spacing, so the
     filter behaves the same whatever the IMU rate; ``alpha`` sets the coefficient directly.
+    A sample stamped at or before the previous one does not reset the filter.
     """
 
-    version = "1"
+    version = "2"
     description = "Exponential low-pass filter on accelerometer and gyroscope"
     outputs = {"*": OutputSpec(payload="imu", units={"accel": "m/s^2", "gyro": "rad/s"})}
 
@@ -58,8 +59,10 @@ class Lowpass(Processor):
         p = self.params
         if p.alpha is not None:
             return float(p.alpha)
-        if self._last_ts is None or ts <= self._last_ts:
+        if self._last_ts is None:
             return 1.0
+        if ts <= self._last_ts:  # a duplicate or late sample: no time has passed, keep the state
+            return 0.0
         dt = (ts - self._last_ts) / 1e9
         rc = 1.0 / (2 * math.pi * p.cutoff_hz)
         return float(dt / (rc + dt))
@@ -68,7 +71,7 @@ class Lowpass(Processor):
         imu = _imu(inputs)
         ts = inputs.primary.device_timestamp_ns
         a = self._alpha(ts)
-        self._last_ts = ts
+        self._last_ts = ts if self._last_ts is None else max(self._last_ts, ts)
         if self._accel is None or self._gyro is None:
             accel, gyro = imu.accel_msec2, imu.gyro_radsec
         else:
@@ -109,7 +112,7 @@ class MotionDetector(Processor):
     or only on transitions when ``emit: "changes"``.
     """
 
-    version = "2"
+    version = "3"
     description = "Head motion indicator from the gyroscope norm (with hysteresis)"
     outputs = {"*": OutputSpec(payload="scalar", units={"value": "moving (0/1)"})}
 
@@ -138,13 +141,13 @@ class MotionDetector(Processor):
         imu = _imu(inputs)
         ts = inputs.primary.device_timestamp_ns
         n = _norm(imu.gyro_radsec)
-        if self._last_ts is None or ts <= self._last_ts:
+        if self._last_ts is None:
             self._smooth = n
-        else:
+        elif ts > self._last_ts:  # a duplicate or late sample leaves the smoothed norm as it is
             dt_ms = (ts - self._last_ts) / 1e6
             a = min(1.0, dt_ms / self.params.window_ms)
             self._smooth += a * (n - self._smooth)
-        self._last_ts = ts
+        self._last_ts = ts if self._last_ts is None else max(self._last_ts, ts)
         was = self._moving
         if not was and self._smooth > self.params.threshold:
             self._moving = True

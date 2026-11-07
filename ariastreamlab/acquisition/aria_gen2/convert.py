@@ -196,6 +196,9 @@ def audio_to_payload(
     samples: NDArray[Any] = (
         raw.reshape(n, ch) if n and raw.size == n * ch else raw.reshape(-1, max(ch, 1))
     )
+    # The SDK hands a Python list of ints (int64 here) whose values are 16-bit PCM: three
+    # probe recordings (2026-10-13) peak at exactly -32768 and sit at 5-11 in a quiet room.
+    # So this is a cast with a guard, not a rescale (shifting by 16 bits would silence it).
     if samples.dtype != np.int16:
         samples = np.clip(samples, -32768, 32767).astype(np.int16)
     return AudioPayload(samples, int(sample_rate_hz), ts if n else None)

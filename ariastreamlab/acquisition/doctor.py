@@ -162,7 +162,7 @@ def run_checks(
     except OSError as exc:
         out.append(Check("disk space", "warn", str(exc)))
     if with_device and cli:
-        from ariastreamlab.acquisition.aria_gen2.cli import AriaCli
+        from ariastreamlab.acquisition.aria_gen2.cli import AriaCli, is_authenticated
 
         try:
             res = AriaCli().run("device list", timeout_s=60)
@@ -174,8 +174,7 @@ def run_checks(
                 )
             )
             res = AriaCli().run("auth check", timeout_s=60)
-            text = res.text.lower()
-            authenticated = res.ok and "authenticated" in text and "not authenticated" not in text
+            authenticated = res.ok and is_authenticated(res.text)
             out.append(
                 Check(
                     "pairing (auth check)",

@@ -570,9 +570,16 @@ def _macos_join_wifi(ssid: str, password: str, interface: str = "en0") -> bool:
     except (OSError, subprocess.TimeoutExpired) as exc:
         log.warning("hotspot.auto_join_failed", error=str(exc))
         return False
-    ok = proc.returncode == 0 and "Error" not in proc.stdout
-    log.info("hotspot.auto_join", ssid=ssid, ok=ok, output=proc.stdout.strip()[:200])
+    # networksetup exits 0 also when it fails ("Could not find network <ssid>.", "Failed to
+    # join network …", "Error: …"): success is an exit code of 0 *and* nothing on the output
+    output = f"{proc.stdout}\n{proc.stderr}".strip()
+    failed = any(w in output.lower() for w in _JOIN_FAILURES)
+    ok = proc.returncode == 0 and not failed
+    log.info("hotspot.auto_join", ssid=ssid, ok=ok, output=output[:200])
     return ok
+
+
+_JOIN_FAILURES = ("could not find network", "failed", "error", "unable", "not found")
 
 
 def _opt_int(v: Any) -> int | None:

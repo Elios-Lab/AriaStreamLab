@@ -14,6 +14,7 @@ This module computes the second kind and the rates; the others are joined in by
 
 from __future__ import annotations
 
+import itertools
 import threading
 import time
 from collections import deque
@@ -78,7 +79,9 @@ class _StreamTracker:
         self.max_device: int | None = None
         self.last_host: int | None = None
         self.max_seq: int | None = None
-        self.missing: set[int] = set()  # sequence numbers not (yet) seen below max_seq
+        self.missing: dict[int, None] = {}
+        """Sequence numbers not (yet) seen below ``max_seq``, oldest first (an ordered set:
+        holes are only ever added above every earlier one, so insertion order is seq order)."""
         self.confirmed_dropped = 0  # holes evicted from `missing` because it grew too large
         self.out_of_order = 0
         self.window: deque[int] = deque()
@@ -128,14 +131,16 @@ class _StreamTracker:
                 if gap > _MAX_MISSING:  # absurd jump (device restart?): count, do not enumerate
                     self.confirmed_dropped += gap
                 else:
-                    self.missing.update(range(self.max_seq + 1, seq))
-                    if len(self.missing) > _MAX_MISSING:
-                        evict = sorted(self.missing)[: len(self.missing) - _MAX_MISSING]
-                        self.missing.difference_update(evict)
-                        self.confirmed_dropped += len(evict)
+                    self.missing.update(dict.fromkeys(range(self.max_seq + 1, seq)))
+                    excess = len(self.missing) - _MAX_MISSING
+                    if excess > 0:  # the oldest holes will not be filled any more
+                        oldest = list(itertools.islice(self.missing, excess))
+                        for s in oldest:
+                            del self.missing[s]
+                        self.confirmed_dropped += excess
             self.max_seq = seq
         else:
-            self.missing.discard(seq)  # a late arrival fills its hole; duplicates are ignored
+            self.missing.pop(seq, None)  # a late arrival fills its hole; duplicates are ignored
 
     def rate(self, now_host_ns: int | None = None) -> float | None:
         """Rate over the last window of data; ``0.0`` once the stream is stale in host time."""

@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from ariastreamlab.config.loader import load_config
+from ariastreamlab.config.loader import load_config, load_dict
 from ariastreamlab.config.models import DashboardConfig, ExecutionConfig, ExperimentConfig
 from ariastreamlab.dashboard.app import Dashboard
 from ariastreamlab.dashboard.designer import Designer, fields_of
@@ -50,7 +50,8 @@ def test_designer_from_preset_validates_and_compacts(tmp_path: Path) -> None:
     p = d.save("exp.json")
     assert p == tmp_path / "exp.json"
     cfg = load_config(p)
-    full = ExperimentConfig.model_validate(json.loads(d.to_json(compact=False)))
+    # loaded from a file, the default sessions folder is next to it: compare like with like
+    full = load_dict(json.loads(d.to_json(compact=False)), base_dir=tmp_path)
     assert cfg.enabled_streams() == full.enabled_streams()  # defaults were dropped, not lost
     a, b = cfg.model_dump(mode="json"), full.model_dump(mode="json")
     a.pop("streams"), b.pop("streams")

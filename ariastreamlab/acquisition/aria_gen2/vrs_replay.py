@@ -13,9 +13,11 @@ Two backends, both producing the same :class:`~ariastreamlab.core.sample.Sample`
 from __future__ import annotations
 
 import contextlib
+import platform
 import threading
 import time
-from collections.abc import Iterator
+from collections import Counter
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -226,6 +228,59 @@ def _record_index_of(provider: Any, vrs_id: Any, ts: int) -> int:
     return max(int(i), 0)
 
 
+class _DecodingHandler:
+    """A ``StreamDataInterface`` with Meta's Python H.265 decoder in front of image callbacks.
+
+    The external SDK wheel does not decode images itself: a bare ``StreamDataInterface(True)``
+    hands RGB frames over still encoded, and ``to_numpy_array()`` raises
+    ``bad_optional_access`` (hardware probe run 5; a replay of a probe recording delivered 0
+    of 40 RGB frames). Meta's ``StreamReceiver`` interposes ``aria.image_decoder`` for exactly
+    this; this class does the same for the replay engine, so replayed frames match live ones.
+    Every other attribute is the wrapped handler's.
+    """
+
+    def __init__(self, handler: Any, decoder: Any) -> None:
+        self._handler = handler
+        self._decoder = decoder
+        self.decode_failed: Counter[str] = Counter()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._handler, name)
+
+    def _decoded(self, kind: str, callback: Callable[[Any, Any], None]) -> Callable[..., None]:
+        def on_image(image_data: Any, record: Any) -> None:
+            try:
+                ok = bool(self._decoder.decode_image(image_data, record))
+            except Exception:
+                ok = False
+            if not ok:  # an undecoded frame is raw H.265 bytes: never pass it on
+                self.decode_failed[kind] += 1
+                if self.decode_failed[kind] == 1:
+                    log.warning("replay.decode_failed", kind=kind)
+                return
+            callback(image_data, record)
+
+        return on_image
+
+    def register_rgb_callback(self, callback: Callable[[Any, Any], None]) -> None:
+        self._handler.register_rgb_callback(self._decoded("rgb", callback))
+
+    def register_slam_callback(self, callback: Callable[[Any, Any], None]) -> None:
+        self._handler.register_slam_callback(self._decoded("slam", callback))
+
+    def register_et_callback(self, callback: Callable[[Any, Any], None]) -> None:
+        self._handler.register_et_callback(self._decoded("et", callback))
+
+
+def _image_decoder() -> Any | None:
+    """Meta's ``aria.image_decoder.ImageDecoder`` (hardware decoding on macOS), if installed."""
+    try:
+        from aria import image_decoder
+    except ImportError:
+        return None
+    return image_decoder.ImageDecoder(hw_accel=platform.system() == "Darwin")
+
+
 class SdkReplaySource(Source):
     """Replay through the client SDK's own replay engine (same callbacks as a live device)."""
 
@@ -266,14 +321,25 @@ class SdkReplaySource(Source):
             clock,
         )
         self._handler: Any = None
+        self._decoding: _DecodingHandler | None = None
         self._session: Any = None
         self._watch: threading.Thread | None = None
         self._stop = threading.Event()
 
     def start(self, bus: EventBus) -> None:  # noqa: D102
         self._binder._bus = bus
-        self._handler = self._sdk.StreamDataInterface(True)
-        self._binder.bind(self._handler)
+        decoder = _image_decoder()
+        if decoder is None:
+            log.warning(
+                "replay.no_image_decoder",
+                note="aria.image_decoder is missing: RGB frames will not be decoded",
+            )
+            self._handler = self._sdk.StreamDataInterface(True)
+            self._binder.bind(self._handler)
+        else:  # as Meta's StreamReceiver: no SDK decoding, the Python decoder for images
+            self._handler = self._sdk.StreamDataInterface(False)
+            self._decoding = _DecodingHandler(self._handler, decoder)
+            self._binder.bind(self._decoding)
         cfg = self._sdk.ReplaySourceConfig()
         cfg.filename = str(self.path)
         cfg.speed_multiplier = float(self._speed)
@@ -355,5 +421,11 @@ class SdkReplaySource(Source):
         return SourceStats(
             dict(self._binder.received),
             {},
-            {"callback_errors": dict(self._binder.errors), "speed": self._speed},
+            {
+                "callback_errors": dict(self._binder.errors),
+                "decode_failed": {}
+                if self._decoding is None
+                else dict(self._decoding.decode_failed),
+                "speed": self._speed,
+            },
         )

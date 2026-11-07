@@ -26,6 +26,38 @@
   "port 8765 is in use" with a hint instead of flashing and closing, and a session's
   dashboard can start again in the same process once the port is free (before: "Cannot
   add middleware after an application has started").
+- SDK replay of a VRS (`--backend sdk`) delivers RGB frames: they reached it still H.265
+  encoded and every one failed (`bad_optional_access`; a probe recording gave 0 of 40
+  frames, now 40 at 2560×1920). It decodes with Meta's `aria.image_decoder`, as its live
+  receiver does; a frame that cannot be decoded is counted (`decode_failed`), never passed on.
+- The default sessions folder (`./sessions`, when a file has no `storage.root`) is next to
+  the experiment file, like a written one; it was the current directory.
+- Designer, *save*: the file's `extends` is kept and only what differs from it is written
+  (it was flattened into the preset's values). Saving into another folder rewrites relative
+  paths so they point where they did. The file name defaults to the file that was opened
+  (it was always `experiment.json`), and saving over any other existing file asks first.
+- `ariastreamlab design` with a missing or invalid file says what is wrong and exits with
+  code 2, like `run`; it printed a traceback.
+- Sessions page: a session's details (its size on disk, which walks every file) load off
+  the interface's event loop; a large session froze every page until they were read.
+- Reading a session: samples are in time order across chunk files too (a late sample at a
+  flush boundary came out of order, and `iter_all` merged on that order). An unreadable
+  chunk is listed in `SessionReader.read_errors` instead of silently skipped. Videos are
+  read frame after frame instead of seeking before each frame. Chunk files are flushed to
+  disk before they are renamed into place.
+- `imu.lowpass` (version 2) and `imu.motion` (version 3) are not reset by a sample stamped
+  at or before the previous one; one late glitch went straight through or read as motion.
+- Pairing checks (`doctor`, `auth check`) no longer read "unauthenticated" as paired. The
+  `aria_gen2` command failing to start is a readable device error, and stray bytes in its
+  output no longer raise. Joining the glasses' hotspot on macOS reads the output of
+  `networksetup`, which reports "Could not find network" with exit code 0.
+- Statistics: the publish counters of the event bus no longer lose increments when several
+  threads publish (about 60 % were lost under contention), and a stream losing many
+  samples no longer re-sorts its whole list of missing sequence numbers on every new gap
+  (≈ 5 s per 10 000 gaps, under the statistics lock). An empty subscription is truthy.
+- `TimeSeriesBuffer.interpolate(ts, interp_imu)` (or `interp_pose`) works on a buffer of
+  samples; it raised `AttributeError`. `ns_to_timedelta` truncates negative values toward
+  zero, as documented.
 
 ## 0.2.5 — 2026-11-07
 

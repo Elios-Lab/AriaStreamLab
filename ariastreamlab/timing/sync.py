@@ -18,7 +18,7 @@ import bisect
 import math
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Generic, Protocol, TypeVar
+from typing import Any, Generic, Protocol, TypeVar
 
 from ariastreamlab.core.payloads import ImuPayload, PosePayload
 
@@ -213,8 +213,18 @@ def slerp_wxyz(
     return (w0 * s0 + w1 * s1, x0 * s0 + x1 * s1, y0 * s0 + y1 * s1, z0 * s0 + z1 * s1)
 
 
-def interp_imu(a: ImuPayload, b: ImuPayload, alpha: float) -> ImuPayload:
-    """Linear interpolation of IMU samples."""
+def _payload(x: Any) -> Any:
+    """The payload of a sample, or ``x`` itself when it already is one.
+
+    :meth:`TimeSeriesBuffer.interpolate` hands its *items* (samples) to the function, so
+    ``buffer.interpolate(ts, interp_imu)`` must work on samples as well as on payloads.
+    """
+    return x if isinstance(x, (ImuPayload, PosePayload)) else getattr(x, "data", x)
+
+
+def interp_imu(a: Any, b: Any, alpha: float) -> ImuPayload:
+    """Linear interpolation of IMU samples (``ImuPayload`` or samples carrying one)."""
+    a, b = _payload(a), _payload(b)
     temp = None
     if a.temperature_c is not None and b.temperature_c is not None:
         temp = a.temperature_c + (b.temperature_c - a.temperature_c) * alpha
@@ -223,8 +233,9 @@ def interp_imu(a: ImuPayload, b: ImuPayload, alpha: float) -> ImuPayload:
     )
 
 
-def interp_pose(a: PosePayload, b: PosePayload, alpha: float) -> PosePayload:
-    """Lerp translation, slerp rotation."""
+def interp_pose(a: Any, b: Any, alpha: float) -> PosePayload:
+    """Lerp translation, slerp rotation (``PosePayload`` or samples carrying one)."""
+    a, b = _payload(a), _payload(b)
     lin = None
     if a.linear_velocity_msec is not None and b.linear_velocity_msec is not None:
         lin = lerp3(a.linear_velocity_msec, b.linear_velocity_msec, alpha)

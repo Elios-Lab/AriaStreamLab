@@ -548,7 +548,7 @@ def test_graph_chains_processors_and_orders_them(
     h = health.drain()
     assert h and set(h[-1]) == {"lp", "mag", "moving"} and h[-1]["lp"]["fired"] == 50
     info = g.stream_info()
-    assert info["lp"]["version"] == "1" and info["lp"]["parameters"]["alpha"] == 0.5
+    assert info["lp"]["version"] == "2" and info["lp"]["parameters"]["alpha"] == 0.5
     assert info["moving"]["units"] == {"value": "moving (0/1)"}
     assert g.saved_outputs() == ["moving", "lp", "mag"]
 
@@ -1075,3 +1075,27 @@ def test_gaze_projection_follows_a_live_camera_change(provenance: Provenance) ->
     w.update_parameters({"camera": "camera-other"})
     out = proc.process(inputs)  # before: still projected into camera-rgb
     assert out is not None and out.data["x"] == 160.0 and out.data["y"] == 120.0
+
+
+@pytest.mark.parametrize("late_ts", [10_000_000, 5_000_000])  # a duplicate, then a late sample
+def test_imu_filters_do_not_reset_on_a_repeated_or_late_timestamp(
+    late_ts: int, provenance: Provenance
+) -> None:
+    from ariastreamlab.processing.builtin.imu import Lowpass, MotionDetector
+
+    def imu(ts: int, value: float) -> Inputs:
+        p = ImuPayload((value, 0.0, 0.0), (value, 0.0, 0.0), None)
+        return Inputs("imu_left", {"imu_left": Sample("d", "imu_left", ts, ts, ts, p, provenance)})
+
+    lp = Lowpass()
+    lp.setup(_ctx(_cfg("lp", "imu.lowpass", ["imu_left"], ["lp"]), Lowpass.Parameters()))
+    md = MotionDetector()
+    md.setup(_ctx(_cfg("m", "imu.motion", ["imu_left"], ["m"]), MotionDetector.Parameters()))
+    for i in range(11):  # at rest, 1 kHz
+        lp.process(imu(i * 1_000_000, 0.0))
+        md.process(imu(i * 1_000_000, 0.0))
+    spike = imu(late_ts, 50.0)  # a glitch stamped at or before the last sample
+    assert lp.process(spike).data.accel_msec2[0] == 0.0  # before: the raw 50.0 came through
+    out = md.process(spike)
+    assert out is not None and out.data.value == 0.0  # before: "moving" from one glitch
+    assert out.metadata["gyro_norm_radsec"] == 0.0
